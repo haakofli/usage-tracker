@@ -1,1 +1,5 @@
 /target
+
+# Icon PNGs are intermediates for assets/icon.ico; the .ico and .svg are the
+# committed sources.
+/assets/*.png
