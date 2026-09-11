@@ -3,12 +3,16 @@ use egui::{ColorImage, TextureHandle, TextureOptions};
 const CLAUDE_SVG: &str = include_str!("../assets/claude.svg");
 const CODEX_SVG: &str = include_str!("../assets/codex.svg");
 pub const APP_ICON_SVG: &str = include_str!("../assets/branding/app.svg");
-pub const TRAY_ICON_SVG: &str = include_str!("../assets/branding/tray.svg");
 
-/// Flat black with an alpha channel, which is what macOS wants from a menu bar
-/// image: it tints the mask itself, so one asset covers light and dark.
+/// The mark the tray draws on this platform.
+///
+/// macOS tints a template image to match the menu bar in either appearance, so
+/// the flat black mask is the right source there. Windows draws the icon exactly
+/// as given, which is what the teal one is for.
 #[cfg(target_os = "macos")]
-pub const TRAY_TEMPLATE_SVG: &str = include_str!("../assets/branding/tray-template.svg");
+pub const TRAY_ICON_SVG: &str = include_str!("../assets/branding/tray-template.svg");
+#[cfg(windows)]
+pub const TRAY_ICON_SVG: &str = include_str!("../assets/branding/tray.svg");
 
 /// Rasterised well above display size so the marks stay crisp at any DPI and
 /// when the panel animates.

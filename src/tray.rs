@@ -56,17 +56,7 @@ impl Tray {
 
     pub fn new(settings: &Settings, installed: &[ProviderId], ctx: &egui::Context) -> Option<Self> {
         const SIZE: u32 = 32;
-
-        // macOS tints a template image to match the menu bar in either
-        // appearance, so the flat black mark is the right source there. Windows
-        // draws the tray icon exactly as given, which is what the teal one is
-        // for.
-        #[cfg(target_os = "macos")]
-        let mark = icons::TRAY_TEMPLATE_SVG;
-        #[cfg(windows)]
-        let mark = icons::TRAY_ICON_SVG;
-
-        let rgba = icons::rasterise_rgba(mark, SIZE)?;
+        let rgba = icons::rasterise_rgba(icons::TRAY_ICON_SVG, SIZE)?;
         let icon = Icon::from_rgba(rgba, SIZE, SIZE).ok()?;
 
         // Native Win32 menus honour this process-wide setting, so the tray menu
