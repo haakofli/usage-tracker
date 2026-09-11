@@ -18,8 +18,7 @@ pub struct LastGood {
 }
 
 fn store_path() -> Result<std::path::PathBuf> {
-    let base = std::env::var("LOCALAPPDATA").context("LOCALAPPDATA not set")?;
-    Ok(std::path::Path::new(&base)
+    Ok(crate::platform::config_dir()?
         .join("usage-tracker")
         .join("last-good.json"))
 }

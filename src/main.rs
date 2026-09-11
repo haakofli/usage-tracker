@@ -1,16 +1,16 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod claude;
 mod codex;
 mod icons;
 mod model;
+mod platform;
 mod poller;
 mod providers;
 mod settings;
 mod store;
 mod tray;
 mod ui;
-mod winshape;
 
 use model::Snapshot;
 use settings::{DockEdge, Settings};
@@ -130,11 +130,11 @@ struct Dock {
     control: Arc<poller::Control>,
     settings: Settings,
     icons: icons::Icons,
-    win: Option<winshape::Window>,
+    win: Option<platform::Window>,
     tray: Option<tray::Tray>,
     tooltip: Option<String>,
     shown: Vec<ui::Provider>,
-    zoom_keys: winshape::ZoomKeys,
+    zoom_keys: platform::ZoomKeys,
     width: f32,
     visible: bool,
     placed: bool,
@@ -144,7 +144,7 @@ struct Dock {
     pending_resize: bool,
     pending_reposition: bool,
     installed: Vec<providers::ProviderId>,
-    last_monitor: Option<winshape::Monitor>,
+    last_monitor: Option<platform::Monitor>,
 }
 
 impl Dock {
@@ -182,7 +182,7 @@ impl Dock {
             installed,
             tooltip: None,
             shown,
-            zoom_keys: winshape::ZoomKeys::default(),
+            zoom_keys: platform::ZoomKeys::default(),
             width: ui::PANEL_W,
             visible: true,
             placed: false,
@@ -359,9 +359,9 @@ impl Dock {
     /// dock returns to the screen it was left on even when the displays differ
     /// in size or arrangement. Falls back to whichever screen the window is
     /// currently on, then to the last known value if Windows declines to answer.
-    fn monitor_px(&mut self, _ctx: &egui::Context) -> Option<winshape::Monitor> {
+    fn monitor_px(&mut self, _ctx: &egui::Context) -> Option<platform::Monitor> {
         if let Some(name) = self.settings.monitor.as_deref()
-            && let Some(found) = winshape::monitors().into_iter().find(|m| m.name == name)
+            && let Some(found) = platform::monitors().into_iter().find(|m| m.name == name)
         {
             self.last_monitor = Some(found);
             return self.last_monitor.clone();
@@ -369,7 +369,7 @@ impl Dock {
         if let Some(current) = self
             .win
             .as_ref()
-            .and_then(winshape::Window::monitor_rect_px)
+            .and_then(platform::Window::monitor_rect_px)
         {
             self.last_monitor = Some(current);
         }
@@ -377,7 +377,7 @@ impl Dock {
     }
 
     /// Vertical pixels the dock can be moved within on `monitor`.
-    fn room_px(&self, ctx: &egui::Context, monitor: &winshape::Monitor) -> f32 {
+    fn room_px(&self, ctx: &egui::Context, monitor: &platform::Monitor) -> f32 {
         let height_px = ui::window_height(self.shown.len()) * ctx.pixels_per_point();
         (monitor.height() as f32 - height_px).max(0.0)
     }
@@ -392,7 +392,7 @@ impl Dock {
     /// that does not shift when the zoom changes. The docked edge stays flush
     /// with the screen and the top edge stays put, so the dock grows downwards
     /// and inwards: leftwards when docked right, rightwards when docked left.
-    fn anchor_px(&self, ctx: &egui::Context, monitor: &winshape::Monitor) -> (f32, f32) {
+    fn anchor_px(&self, ctx: &egui::Context, monitor: &platform::Monitor) -> (f32, f32) {
         let ppp = ctx.pixels_per_point();
         let (left, top, right) = (monitor.left, monitor.top, monitor.right);
         let width_px = ui::PANEL_W * ppp;
@@ -469,7 +469,7 @@ impl Dock {
         let landed = self
             .win
             .as_ref()
-            .and_then(winshape::Window::monitor_rect_px)
+            .and_then(platform::Window::monitor_rect_px)
             .unwrap_or(monitor);
         self.settings.monitor = Some(landed.name.clone());
         self.last_monitor = Some(landed.clone());
@@ -512,7 +512,7 @@ impl eframe::App for Dock {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.win.is_none() {
-            self.win = Some(winshape::Window::new(frame));
+            self.win = Some(platform::Window::new(frame));
         }
         // winit re-applies window styles on resize, so re-assert them rather
         // than stripping once at startup.
@@ -522,7 +522,7 @@ impl eframe::App for Dock {
         // Plugging a monitor in or out invalidates the screen the dock was
         // anchored to, and Windows will have moved the window. Re-anchor rather
         // than leaving it stranded mid-screen.
-        if winshape::take_display_changed() {
+        if platform::take_display_changed() {
             self.placed = false;
             self.pending_resize = true;
             self.last_monitor = None;
@@ -552,12 +552,14 @@ impl eframe::App for Dock {
         // the animation stutter — so the rest of it is transparent and must not
         // swallow clicks meant for what is behind.
         let local = frame_info.card.translate(-origin.to_vec2());
-        winshape::set_hit_rect(
-            (local.min.x * ppp).floor() as i32,
-            (local.min.y * ppp).floor() as i32,
-            (local.max.x * ppp).ceil() as i32,
-            (local.max.y * ppp).ceil() as i32,
-        );
+        if let Some(win) = self.win.as_ref() {
+            win.set_hit_rect(
+                (local.min.x * ppp).floor() as i32,
+                (local.min.y * ppp).floor() as i32,
+                (local.max.x * ppp).ceil() as i32,
+                (local.max.y * ppp).ceil() as i32,
+            );
+        }
 
         // Hover comes from the real cursor, not egui's enter/leave events.
         // Instant in both directions.
@@ -565,7 +567,7 @@ impl eframe::App for Dock {
             let inside = self
                 .win
                 .as_ref()
-                .and_then(winshape::Window::cursor_inside)
+                .and_then(platform::Window::cursor_inside)
                 .is_some_and(|(x, y)| {
                     let p = origin + egui::vec2(x / ppp, y / ppp);
                     frame_info.card.contains(p)
@@ -588,9 +590,9 @@ impl eframe::App for Dock {
         if self.expanded {
             if let Some(key) = self.zoom_keys.poll() {
                 let next = match key {
-                    winshape::ZoomKey::Bigger => self.settings.scale + 0.1,
-                    winshape::ZoomKey::Smaller => self.settings.scale - 0.1,
-                    winshape::ZoomKey::Reset => 1.0,
+                    platform::ZoomKey::Bigger => self.settings.scale + 0.1,
+                    platform::ZoomKey::Smaller => self.settings.scale - 0.1,
+                    platform::ZoomKey::Reset => 1.0,
                 };
                 self.set_scale(&ctx, next);
                 let _ = settings::save(&self.settings);

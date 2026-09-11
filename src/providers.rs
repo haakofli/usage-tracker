@@ -81,25 +81,35 @@ impl ProviderId {
 }
 
 fn home_dir_exists(name: &str) -> bool {
-    std::env::var("USERPROFILE")
-        .map(|home| std::path::Path::new(&home).join(name).is_dir())
+    crate::platform::home_dir()
+        .map(|home| home.join(name).is_dir())
         .unwrap_or(false)
 }
 
 /// Walks `PATH` directly rather than spawning a shell: launching several
 /// processes at startup just to answer "is this installed" is not worth it.
 fn on_path(binary: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else {
+    let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    let extensions = ["exe", "cmd", "bat", "ps1"];
-    path.split(';').filter(|dir| !dir.is_empty()).any(|dir| {
-        let base = std::path::Path::new(dir).join(binary);
-        base.is_file()
-            || extensions
-                .iter()
-                .any(|ext| base.with_extension(ext).is_file())
-    })
+    // Windows resolves a bare name through these; elsewhere an executable
+    // carries no extension, so the bare path is the only candidate.
+    let extensions: &[&str] = if cfg!(windows) {
+        &["exe", "cmd", "bat", "ps1"]
+    } else {
+        &[]
+    };
+    // `split_paths` rather than splitting on a literal separator, which is `;`
+    // on Windows and `:` everywhere else.
+    std::env::split_paths(&path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .any(|dir| {
+            let base = dir.join(binary);
+            base.is_file()
+                || extensions
+                    .iter()
+                    .any(|ext| base.with_extension(ext).is_file())
+        })
 }
 
 pub fn installed() -> Vec<ProviderId> {

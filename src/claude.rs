@@ -62,8 +62,7 @@ fn find_object_with_key<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a s
 }
 
 pub fn credentials_path() -> Result<std::path::PathBuf> {
-    let home = std::env::var("USERPROFILE").context("USERPROFILE not set")?;
-    Ok(std::path::Path::new(&home)
+    Ok(crate::platform::home_dir()?
         .join(".claude")
         .join(".credentials.json"))
 }

@@ -57,8 +57,7 @@ pub struct CodexReading {
 }
 
 pub fn sessions_root() -> anyhow::Result<std::path::PathBuf> {
-    let home = std::env::var("USERPROFILE")?;
-    Ok(std::path::Path::new(&home).join(".codex").join("sessions"))
+    Ok(crate::platform::home_dir()?.join(".codex").join("sessions"))
 }
 
 pub fn latest_reading() -> anyhow::Result<Option<CodexReading>> {

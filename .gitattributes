@@ -1,0 +1,12 @@
+# Shell scripts must keep LF. A CRLF shebang fails on macOS with
+# "bad interpreter: /usr/bin/env bash^M", which is exactly how install.sh
+# would arrive if checked out from a Windows clone.
+*.sh text eol=lf
+
+# PowerShell is happiest with CRLF on Windows.
+*.ps1 text eol=crlf
+
+# Never line-ending convert binary assets.
+*.png binary
+*.ico binary
+*.icns binary

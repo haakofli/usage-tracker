@@ -23,26 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PCSTR, w};
 
-/// One display, in physical pixels, plus the device name that identifies it
-/// across restarts so the dock can return to the screen it was left on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Monitor {
-    pub left: i32,
-    pub top: i32,
-    pub right: i32,
-    pub bottom: i32,
-    pub name: String,
-}
-
-impl Monitor {
-    pub fn width(&self) -> i32 {
-        self.right - self.left
-    }
-
-    pub fn height(&self) -> i32 {
-        self.bottom - self.top
-    }
-}
+use super::Monitor;
 
 unsafe fn monitor_info(handle: HMONITOR) -> Option<Monitor> {
     unsafe {
@@ -165,6 +146,25 @@ impl Window {
             Some(((p.x - r.left) as f32, (p.y - r.top) as f32))
         }
     }
+
+    /// Restricts mouse input to the painted card.
+    ///
+    /// The window is deliberately kept at its expanded size at all times —
+    /// resizing it mid-animation recreates the GL surface and makes the hover
+    /// stutter — so most of it is transparent while collapsed. Without this,
+    /// that transparent area would swallow clicks meant for whatever is behind
+    /// it. Answering `WM_NCHITTEST` with `HTTRANSPARENT` outside the card
+    /// passes those clicks through, which a window region would also do but at
+    /// the cost of clipping what gets painted.
+    ///
+    /// The rectangle is read by the hit test on the message pump rather than
+    /// applied here, so this is just four stores.
+    pub fn set_hit_rect(&self, l: i32, t: i32, r: i32, b: i32) {
+        HIT_L.store(l, Ordering::Relaxed);
+        HIT_T.store(t, Ordering::Relaxed);
+        HIT_R.store(r, Ordering::Relaxed);
+        HIT_B.store(b, Ordering::Relaxed);
+    }
 }
 
 /// What the zoom keys are asking for this frame.
@@ -274,22 +274,6 @@ pub fn use_dark_menus() {
             flush();
         }
     }
-}
-
-/// Restricts mouse input to the painted card.
-///
-/// The window is deliberately kept at its expanded size at all times — resizing
-/// it mid-animation recreates the GL surface and makes the hover stutter — so
-/// most of it is transparent while collapsed. Without this, that transparent
-/// area would swallow clicks meant for whatever is behind it. Answering
-/// `WM_NCHITTEST` with `HTTRANSPARENT` outside the card passes those clicks
-/// through, which a window region would also do but at the cost of clipping
-/// what gets painted.
-pub fn set_hit_rect(l: i32, t: i32, r: i32, b: i32) {
-    HIT_L.store(l, Ordering::Relaxed);
-    HIT_T.store(t, Ordering::Relaxed);
-    HIT_R.store(r, Ordering::Relaxed);
-    HIT_B.store(b, Ordering::Relaxed);
 }
 
 /// Collapses the non-client area to nothing.

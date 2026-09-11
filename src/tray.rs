@@ -56,12 +56,23 @@ impl Tray {
 
     pub fn new(settings: &Settings, installed: &[ProviderId], ctx: &egui::Context) -> Option<Self> {
         const SIZE: u32 = 32;
-        let rgba = icons::rasterise_rgba(icons::TRAY_ICON_SVG, SIZE)?;
+
+        // macOS tints a template image to match the menu bar in either
+        // appearance, so the flat black mark is the right source there. Windows
+        // draws the tray icon exactly as given, which is what the teal one is
+        // for.
+        #[cfg(target_os = "macos")]
+        let mark = icons::TRAY_TEMPLATE_SVG;
+        #[cfg(windows)]
+        let mark = icons::TRAY_ICON_SVG;
+
+        let rgba = icons::rasterise_rgba(mark, SIZE)?;
         let icon = Icon::from_rgba(rgba, SIZE, SIZE).ok()?;
 
         // Native Win32 menus honour this process-wide setting, so the tray menu
-        // matches the dock instead of being a bright rectangle beside it.
-        crate::winshape::use_dark_menus();
+        // matches the dock instead of being a bright rectangle beside it. On
+        // macOS the system already does this, and the call is a no-op.
+        crate::platform::use_dark_menus();
 
         let refresh = MenuItem::new("Refresh now", true, None);
         let toggle = MenuItem::new("Show / hide", true, None);
@@ -98,6 +109,7 @@ impl Tray {
         let tray = TrayIconBuilder::new()
             .with_tooltip("Usage tracker — AI quota dock")
             .with_icon(icon)
+            .with_icon_as_template(cfg!(target_os = "macos"))
             // Either button opens the menu; nothing is bound to a bare click.
             .with_menu_on_left_click(true)
             .with_menu(Box::new(menu))

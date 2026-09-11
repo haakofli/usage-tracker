@@ -119,8 +119,7 @@ impl Default for Settings {
 }
 
 fn path() -> Result<std::path::PathBuf> {
-    let base = std::env::var("LOCALAPPDATA").context("LOCALAPPDATA not set")?;
-    Ok(std::path::Path::new(&base)
+    Ok(crate::platform::config_dir()?
         .join("usage-tracker")
         .join("settings.json"))
 }
