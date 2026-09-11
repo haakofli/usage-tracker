@@ -10,7 +10,7 @@
 ![macOS](https://img.shields.io/badge/macOS-111111?style=flat-square&logo=apple&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-79D4B5?style=flat-square)](LICENSE)
 
-<img src="assets/screenshots/collapsed.png" width="190" alt="The collapsed rail: one ring per provider showing the 5-hour window and the time until it resets.">
+<img src="assets/screenshots/collapsed.png" width="220" alt="The collapsed rail: one ring per provider showing the 5-hour window and the time until it resets.">
 <img src="assets/screenshots/expanded.png" width="266" alt="Hovered: the weekly ring slides out beside each 5-hour ring, with the day and time it resets.">
 
 </div>
