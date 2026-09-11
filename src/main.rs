@@ -376,6 +376,12 @@ impl Dock {
         self.last_monitor.clone()
     }
 
+    /// Vertical pixels the dock can be moved within on `monitor`.
+    fn room_px(&self, ctx: &egui::Context, monitor: &winshape::Monitor) -> f32 {
+        let height_px = ui::window_height(self.shown.len()) * ctx.pixels_per_point();
+        (monitor.height() as f32 - height_px).max(0.0)
+    }
+
     fn zoom(ctx: &egui::Context) -> f32 {
         ctx.zoom_factor().max(0.01)
     }
@@ -396,7 +402,10 @@ impl Dock {
             DockEdge::Right => right as f32 - width_px + margin_px,
             DockEdge::Left => left as f32 - margin_px,
         };
-        (x, top as f32 + self.settings.top)
+        (
+            x,
+            top as f32 + self.settings.top * self.room_px(ctx, monitor),
+        )
     }
 
     /// Re-pins the window to its docked edge. Retries on the next frame if the
@@ -433,9 +442,7 @@ impl Dock {
         let Some(monitor) = self.monitor_px(ctx) else {
             return;
         };
-        let height_px = ui::window_height(self.shown.len()) * ctx.pixels_per_point();
-        let room = (monitor.height() as f32 - height_px).max(0.0);
-        self.settings.top = self.settings.top.clamp(0.0, room);
+        let _ = monitor;
         self.reposition(ctx);
         self.placed = true;
     }
@@ -473,7 +480,13 @@ impl Dock {
             landed.width() as f32,
         );
         let room = (landed.height() as f32 - height_px).max(0.0);
-        self.settings.top = (top_px - landed.top as f32).clamp(0.0, room);
+        // Stored proportionally, so the dock keeps its relative height when it
+        // moves to a screen of a different size.
+        self.settings.top = if room > 0.0 {
+            ((top_px - landed.top as f32) / room).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         self.reposition(ctx);
         let _ = settings::save(&self.settings);
     }
@@ -506,6 +519,15 @@ impl eframe::App for Dock {
         if let Some(win) = self.win.as_ref() {
             win.keep_frameless();
         }
+        // Plugging a monitor in or out invalidates the screen the dock was
+        // anchored to, and Windows will have moved the window. Re-anchor rather
+        // than leaving it stranded mid-screen.
+        if winshape::take_display_changed() {
+            self.placed = false;
+            self.pending_resize = true;
+            self.last_monitor = None;
+        }
+
         self.diag(&ctx);
         self.place(&ctx);
         self.frames += 1;

@@ -22,13 +22,23 @@ impl DockEdge {
 
 /// Scaling is applied as egui's zoom factor, so the layout stays in points
 /// and every element — rings, text, padding — grows together.
+/// A little below the vertical middle, which reads as deliberate placement
+/// rather than a corner.
+pub const DEFAULT_TOP: f32 = 0.35;
+
 pub const MIN_SCALE: f32 = 0.6;
 pub const MAX_SCALE: f32 = 2.5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub edge: DockEdge,
-    /// Vertical offset from the top of the monitor, in points.
+    /// Vertical position as a fraction (0..=1) of the room available on the
+    /// monitor, rather than an absolute offset.
+    ///
+    /// An absolute value cannot survive moving between differently sized
+    /// screens: a position saved near the bottom of a 2400px display clamped to
+    /// the bottom edge of a 1440px one. A fraction keeps the dock at the same
+    /// relative height on any screen.
     pub top: f32,
     #[serde(default = "unit_scale")]
     pub scale: f32,
@@ -56,9 +66,13 @@ impl Settings {
             self.scale = 1.0;
         }
         self.scale = self.scale.clamp(MIN_SCALE, MAX_SCALE);
-        if !self.top.is_finite() {
-            self.top = 0.0;
+        // `top` used to be an absolute pixel offset. Anything above 1 is such a
+        // value from an older build, and cannot be reinterpreted as a fraction,
+        // so fall back to a sensible height rather than pinning to an edge.
+        if !self.top.is_finite() || self.top > 1.0 {
+            self.top = DEFAULT_TOP;
         }
+        self.top = self.top.clamp(0.0, 1.0);
         // Drop keys this build does not know, so a provider removed in a later
         // version cannot linger and be counted as enabled.
         if let Some(keys) = &mut self.enabled {
@@ -96,7 +110,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             edge: DockEdge::Right,
-            top: 140.0,
+            top: DEFAULT_TOP,
             scale: 1.0,
             monitor: None,
             enabled: None,
@@ -211,22 +225,44 @@ mod tests {
     fn round_trips_through_disk_format() {
         let s = Settings {
             edge: DockEdge::Left,
-            top: 42.0,
+            top: 0.25,
             scale: 1.4,
             monitor: None,
             enabled: Some(vec!["claude".into()]),
         };
         let decoded: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(decoded.edge, DockEdge::Left);
-        assert_eq!(decoded.top, 42.0);
+        assert_eq!(decoded.top, 0.25);
         assert_eq!(decoded.scale, 1.4);
     }
 
     /// Settings files written before scaling existed must still load.
     #[test]
     fn defaults_scale_for_older_settings_files() {
-        let decoded: Settings = serde_json::from_str(r#"{"edge":"Right","top":100.0}"#).unwrap();
+        let decoded: Settings = serde_json::from_str(r#"{"edge":"Right","top":0.4}"#).unwrap();
         assert_eq!(decoded.scale, 1.0);
+    }
+
+    /// `top` used to be absolute pixels. Such a value must not be mistaken for
+    /// a fraction, or the dock pins itself to the bottom of the screen.
+    #[test]
+    fn migrates_a_legacy_pixel_offset() {
+        let s = Settings {
+            top: 1690.0,
+            ..Default::default()
+        }
+        .sanitised();
+        assert_eq!(s.top, DEFAULT_TOP);
+    }
+
+    #[test]
+    fn keeps_a_fractional_position() {
+        let s = Settings {
+            top: 0.6,
+            ..Default::default()
+        }
+        .sanitised();
+        assert_eq!(s.top, 0.6);
     }
 
     #[test]

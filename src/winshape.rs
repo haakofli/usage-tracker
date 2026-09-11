@@ -2,7 +2,7 @@
 //! and cursor hit-testing.
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::sync::atomic::{AtomicI32, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
@@ -16,9 +16,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, GetCursorPos,
     GetWindowLongPtrW, GetWindowRect, HTTRANSPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WM_NCCALCSIZE, WM_NCHITTEST,
-    WM_NCPAINT, WNDPROC, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
-    WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_THICKFRAME, WindowFromPoint,
+    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_NCCALCSIZE, WM_NCHITTEST, WM_NCPAINT, WM_SETTINGCHANGE, WNDPROC, WS_BORDER, WS_CAPTION,
+    WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE,
+    WS_THICKFRAME, WindowFromPoint,
 };
 use windows::core::{BOOL, PCSTR, w};
 
@@ -227,6 +228,19 @@ impl ZoomKeys {
 /// only ever has one window, so a single slot is enough.
 static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
+/// Set when the displays are rearranged, so the dock can re-attach itself.
+static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the screen layout has changed since this was last asked.
+///
+/// Plugging in a monitor moves the window and invalidates the screen bounds it
+/// was anchored to, but nothing in the normal frame loop notices — the dock was
+/// left floating in the middle of a display. Windows announces this, so it is
+/// worth listening for rather than comparing bounds every frame.
+pub fn take_display_changed() -> bool {
+    DISPLAY_CHANGED.swap(false, Ordering::Relaxed)
+}
+
 /// The painted card, in physical pixels relative to the window's top-left.
 /// Read by the hit test on the UI thread's own message pump.
 static HIT_L: AtomicI32 = AtomicI32::new(0);
@@ -329,6 +343,12 @@ unsafe extern "system" fn subclass_proc(
     // dragging and bought nothing.
     if msg == WM_NCPAINT {
         return LRESULT(0);
+    }
+
+    // Note and forward: the monitor layout or this window's DPI changed, so
+    // whatever the dock was anchored to no longer holds.
+    if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED || msg == WM_SETTINGCHANGE {
+        DISPLAY_CHANGED.store(true, Ordering::Relaxed);
     }
 
     if msg == WM_NCHITTEST {
