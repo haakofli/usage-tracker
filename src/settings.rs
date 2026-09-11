@@ -32,6 +32,11 @@ pub struct Settings {
     pub top: f32,
     #[serde(default = "unit_scale")]
     pub scale: f32,
+    /// Device name of the display the dock was left on, so it returns there
+    /// rather than to whichever screen Windows happens to open it on. `None`
+    /// means "wherever it lands".
+    #[serde(default)]
+    pub monitor: Option<String>,
     /// Provider keys the dock shows. `None` means "not chosen yet", which is
     /// distinct from an explicitly empty list — the first run enables every
     /// readable provider, but someone who turns them all off stays that way.
@@ -93,6 +98,7 @@ impl Default for Settings {
             edge: DockEdge::Right,
             top: 140.0,
             scale: 1.0,
+            monitor: None,
             enabled: None,
         }
     }
@@ -207,6 +213,7 @@ mod tests {
             edge: DockEdge::Left,
             top: 42.0,
             scale: 1.4,
+            monitor: None,
             enabled: Some(vec!["claude".into()]),
         };
         let decoded: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();

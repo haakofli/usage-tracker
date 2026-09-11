@@ -8,18 +8,96 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MONITORINFOEXW, MonitorFromWindow,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, GetCursorPos,
     GetWindowLongPtrW, GetWindowRect, HTTRANSPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WM_NCACTIVATE, WM_NCCALCSIZE,
-    WM_NCHITTEST, WM_NCPAINT, WNDPROC, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE,
-    WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_THICKFRAME, WindowFromPoint,
+    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WM_NCCALCSIZE, WM_NCHITTEST,
+    WM_NCPAINT, WNDPROC, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
+    WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_THICKFRAME, WindowFromPoint,
 };
-use windows::core::{PCSTR, w};
+use windows::core::{BOOL, PCSTR, w};
+
+/// One display, in physical pixels, plus the device name that identifies it
+/// across restarts so the dock can return to the screen it was left on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Monitor {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub name: String,
+}
+
+impl Monitor {
+    pub fn width(&self) -> i32 {
+        self.right - self.left
+    }
+
+    pub fn height(&self) -> i32 {
+        self.bottom - self.top
+    }
+}
+
+unsafe fn monitor_info(handle: HMONITOR) -> Option<Monitor> {
+    unsafe {
+        let mut info = MONITORINFOEXW {
+            monitorInfo: MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let ptr = std::ptr::addr_of_mut!(info).cast::<MONITORINFO>();
+        if !GetMonitorInfoW(handle, ptr).as_bool() {
+            return None;
+        }
+        let r = info.monitorInfo.rcMonitor;
+        let end = info
+            .szDevice
+            .iter()
+            .position(|c| *c == 0)
+            .unwrap_or(info.szDevice.len());
+        Some(Monitor {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+            name: String::from_utf16_lossy(&info.szDevice[..end]),
+        })
+    }
+}
+
+/// Every display currently attached, so a remembered one can be found again.
+pub fn monitors() -> Vec<Monitor> {
+    unsafe extern "system" fn collect(
+        handle: HMONITOR,
+        _dc: HDC,
+        _rect: *mut RECT,
+        data: LPARAM,
+    ) -> BOOL {
+        let out = data.0 as *mut Vec<Monitor>;
+        if let Some(info) = unsafe { monitor_info(handle) } {
+            unsafe { (*out).push(info) };
+        }
+        BOOL(1)
+    }
+
+    let mut found: Vec<Monitor> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect),
+            LPARAM(std::ptr::addr_of_mut!(found) as isize),
+        );
+    }
+    found
+}
 
 pub struct Window {
     hwnd: Option<HWND>,
@@ -59,20 +137,9 @@ impl Window {
     /// is in zoom-inclusive points *and* lags a frame behind a zoom change, so
     /// anchoring to it drifted further from the screen edge with every zoom
     /// step. Physical pixels do not move when the zoom does.
-    pub fn monitor_rect_px(&self) -> Option<(i32, i32, i32, i32)> {
+    pub fn monitor_rect_px(&self) -> Option<Monitor> {
         let hwnd = self.hwnd?;
-        unsafe {
-            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-            let mut info = MONITORINFO {
-                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                ..Default::default()
-            };
-            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
-                return None;
-            }
-            let r = info.rcMonitor;
-            Some((r.left, r.top, r.right, r.bottom))
-        }
+        unsafe { monitor_info(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)) }
     }
 
     /// Cursor position in physical pixels relative to the window's top-left,
@@ -250,14 +317,16 @@ unsafe extern "system" fn subclass_proc(
         return LRESULT(0);
     }
 
-    // Collapsing the non-client area is not enough on its own: Windows still
-    // repaints the frame when activation changes, and opening the tray menu
-    // changes activation — which is why a real title bar, complete with
-    // working buttons, appeared over the dock, but only sometimes. Refusing
-    // both the activation redraw and non-client painting outright stops it.
-    if msg == WM_NCACTIVATE {
-        return LRESULT(1);
-    }
+    // Swallow non-client painting, so no frame is drawn even if Windows decides
+    // one is due — which is what put a title bar over the dock after the tray
+    // menu changed the window's activation state.
+    //
+    // `WM_NCACTIVATE` is deliberately *not* intercepted. Doing so broke
+    // dragging outright: eframe only honours `StartDrag` when
+    // `window.has_focus()`, and short-circuiting activation meant the window
+    // never gained focus. Returning TRUE there does not suppress the frame
+    // either — per the Win32 docs it asks for default processing — so it cost
+    // dragging and bought nothing.
     if msg == WM_NCPAINT {
         return LRESULT(0);
     }

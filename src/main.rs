@@ -143,7 +143,8 @@ struct Dock {
     dragging: bool,
     pending_resize: bool,
     pending_reposition: bool,
-    last_monitor: Option<(i32, i32, i32, i32)>,
+    installed: Vec<providers::ProviderId>,
+    last_monitor: Option<winshape::Monitor>,
 }
 
 impl Dock {
@@ -178,6 +179,7 @@ impl Dock {
             icons: icons::Icons::load(&cc.egui_ctx),
             win: None,
             tray,
+            installed,
             tooltip: None,
             shown,
             zoom_keys: winshape::ZoomKeys::default(),
@@ -249,22 +251,26 @@ impl Dock {
                     self.visible = !self.visible;
                     self.apply_visibility(ctx);
                 }
-                tray::Action::SetProvider(id, on) => {
-                    if self.settings.is_enabled(id) == on {
-                        continue;
-                    }
-                    self.settings.set_enabled(id, on);
-                    let _ = settings::save(&self.settings);
-                    self.shown = shown_providers(&self.settings);
-                    self.control.set_enabled_from(&self.settings);
-                    // The card gains or loses a row, so the window has to
-                    // follow and be re-pinned to its edge.
-                    self.pending_resize = true;
-                    if let Some(tray) = self.tray.as_ref() {
-                        tray.sync_provider_checks(&self.settings);
-                    }
-                }
+                tray::Action::SetProvider(id, on) => self.set_provider(id, on),
             }
+        }
+    }
+
+    /// The one place a provider is switched on or off, shared by the tray menu
+    /// and the dock's own right-click menu.
+    fn set_provider(&mut self, id: providers::ProviderId, on: bool) {
+        if self.settings.is_enabled(id) == on {
+            return;
+        }
+        self.settings.set_enabled(id, on);
+        let _ = settings::save(&self.settings);
+        self.shown = shown_providers(&self.settings);
+        self.control.set_enabled_from(&self.settings);
+        // The card gains or loses a row, so the window has to follow and be
+        // re-pinned to its edge.
+        self.pending_resize = true;
+        if let Some(tray) = self.tray.as_ref() {
+            tray.sync_provider_checks(&self.settings);
         }
     }
 
@@ -347,16 +353,27 @@ impl Dock {
     /// It is also not populated every frame, and a miss used to make
     /// `reposition` silently do nothing, leaving the window sized for one state
     /// but positioned for another — so the last known value is kept.
-    fn monitor_px(&mut self, ctx: &egui::Context) -> Option<(i32, i32, i32, i32)> {
-        let _ = ctx;
-        if let Some(rect) = self
+    /// The display the dock belongs on.
+    ///
+    /// Prefers the one remembered in settings, found by device name, so the
+    /// dock returns to the screen it was left on even when the displays differ
+    /// in size or arrangement. Falls back to whichever screen the window is
+    /// currently on, then to the last known value if Windows declines to answer.
+    fn monitor_px(&mut self, _ctx: &egui::Context) -> Option<winshape::Monitor> {
+        if let Some(name) = self.settings.monitor.as_deref()
+            && let Some(found) = winshape::monitors().into_iter().find(|m| m.name == name)
+        {
+            self.last_monitor = Some(found);
+            return self.last_monitor.clone();
+        }
+        if let Some(current) = self
             .win
             .as_ref()
             .and_then(winshape::Window::monitor_rect_px)
         {
-            self.last_monitor = Some(rect);
+            self.last_monitor = Some(current);
         }
-        self.last_monitor
+        self.last_monitor.clone()
     }
 
     fn zoom(ctx: &egui::Context) -> f32 {
@@ -369,9 +386,9 @@ impl Dock {
     /// that does not shift when the zoom changes. The docked edge stays flush
     /// with the screen and the top edge stays put, so the dock grows downwards
     /// and inwards: leftwards when docked right, rightwards when docked left.
-    fn anchor_px(&self, ctx: &egui::Context, monitor: (i32, i32, i32, i32)) -> (f32, f32) {
+    fn anchor_px(&self, ctx: &egui::Context, monitor: &winshape::Monitor) -> (f32, f32) {
         let ppp = ctx.pixels_per_point();
-        let (left, top, right, _bottom) = monitor;
+        let (left, top, right) = (monitor.left, monitor.top, monitor.right);
         let width_px = ui::PANEL_W * ppp;
         let margin_px = ui::shadow_margin() * ppp;
 
@@ -391,11 +408,12 @@ impl Dock {
             return;
         };
         self.pending_reposition = false;
-        let (x_px, y_px) = self.anchor_px(ctx, monitor);
+        let (x_px, y_px) = self.anchor_px(ctx, &monitor);
         let ppp = ctx.pixels_per_point();
         if std::env::var("DOCK_DIAG").is_ok() {
             eprintln!(
-                "[pos] zoom={:.2} ppp={ppp:.2} monitor_px={monitor:?} anchor_px=({x_px:.0},{y_px:.0}) sending_pts=({:.1},{:.1})",
+                "[pos] zoom={:.2} ppp={ppp:.2} monitor={:?} anchor_px=({x_px:.0},{y_px:.0}) sending_pts=({:.1},{:.1})",
+                monitor.name,
                 Self::zoom(ctx),
                 x_px / ppp,
                 y_px / ppp,
@@ -415,9 +433,8 @@ impl Dock {
         let Some(monitor) = self.monitor_px(ctx) else {
             return;
         };
-        let (_, top, _, bottom) = monitor;
         let height_px = ui::window_height(self.shown.len()) * ctx.pixels_per_point();
-        let room = ((bottom - top) as f32 - height_px).max(0.0);
+        let room = (monitor.height() as f32 - height_px).max(0.0);
         self.settings.top = self.settings.top.clamp(0.0, room);
         self.reposition(ctx);
         self.placed = true;
@@ -435,19 +452,28 @@ impl Dock {
 
         // `outer_rect` is in points; stored geometry is physical pixels.
         let ppp = ctx.pixels_per_point();
-        let (mon_left, mon_top, mon_right, mon_bottom) = monitor;
         let left_px = outer.min.x * ppp;
         let top_px = outer.min.y * ppp;
         let width_px = ui::PANEL_W * ppp;
         let height_px = ui::window_height(self.shown.len()) * ppp;
 
+        // Snap to the screen the dock was actually released on, not the one it
+        // was remembered on, so dragging between displays works.
+        let landed = self
+            .win
+            .as_ref()
+            .and_then(winshape::Window::monitor_rect_px)
+            .unwrap_or(monitor);
+        self.settings.monitor = Some(landed.name.clone());
+        self.last_monitor = Some(landed.clone());
+
         self.settings.edge = DockEdge::nearest(
-            left_px - mon_left as f32,
+            left_px - landed.left as f32,
             width_px,
-            (mon_right - mon_left) as f32,
+            landed.width() as f32,
         );
-        let room = ((mon_bottom - mon_top) as f32 - height_px).max(0.0);
-        self.settings.top = (top_px - mon_top as f32).clamp(0.0, room);
+        let room = (landed.height() as f32 - height_px).max(0.0);
+        self.settings.top = (top_px - landed.top as f32).clamp(0.0, room);
         self.reposition(ctx);
         let _ = settings::save(&self.settings);
     }
@@ -566,9 +592,31 @@ impl eframe::App for Dock {
             self.snap_after_drag(&ctx);
         }
 
+        // Same choices as the tray, so neither has to be hunted for. Both go
+        // through `set_provider`, which keeps them from drifting apart.
+        let mut provider_change: Option<(providers::ProviderId, bool)> = None;
+        let mut flip_edge = false;
+        let mut quit = false;
+        let mut refresh = false;
+
         response.context_menu(|menu| {
+            for &id in &self.installed {
+                let mut on = self.settings.is_enabled(id);
+                if id.has_quota_source() {
+                    if menu.checkbox(&mut on, id.label()).changed() {
+                        provider_change = Some((id, on));
+                    }
+                } else {
+                    menu.add_enabled(
+                        false,
+                        egui::Checkbox::new(&mut false, format!("{}  (no quota)", id.label())),
+                    );
+                }
+            }
+            menu.separator();
+
             if menu.button("Refresh now").clicked() {
-                self.control.request_refresh();
+                refresh = true;
                 menu.close();
             }
             let other = match self.settings.edge {
@@ -576,18 +624,32 @@ impl eframe::App for Dock {
                 DockEdge::Left => "Attach to right edge",
             };
             if menu.button(other).clicked() {
-                self.settings.edge = match self.settings.edge {
-                    DockEdge::Right => DockEdge::Left,
-                    DockEdge::Left => DockEdge::Right,
-                };
-                let _ = settings::save(&self.settings);
-                self.reposition(menu.ctx());
+                flip_edge = true;
                 menu.close();
             }
+            menu.separator();
             if menu.button("Quit").clicked() {
-                menu.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                quit = true;
             }
         });
+
+        if refresh {
+            self.control.request_refresh();
+        }
+        if let Some((id, on)) = provider_change {
+            self.set_provider(id, on);
+        }
+        if flip_edge {
+            self.settings.edge = match self.settings.edge {
+                DockEdge::Right => DockEdge::Left,
+                DockEdge::Left => DockEdge::Right,
+            };
+            let _ = settings::save(&self.settings);
+            self.reposition(&ctx);
+        }
+        if quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         // Keep countdowns ticking without spinning the CPU.
         ctx.request_repaint_after(Duration::from_secs(1));
