@@ -1,6 +1,8 @@
-use crate::model::{Reading, Snapshot};
+use crate::http::FetchError;
+use crate::model::{Quota, Reading, Snapshot};
+use crate::providers::ProviderId;
 use crate::store::{self, CachedQuota, LastGood};
-use crate::{claude, codex};
+use crate::{claude, codex, copilot};
 use chrono::Utc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,16 +46,15 @@ impl Backoff {
 
 pub struct Control {
     refresh: AtomicBool,
-    claude_enabled: AtomicBool,
-    codex_enabled: AtomicBool,
+    /// One flag per provider, indexed by position in [`ProviderId::ALL`].
+    enabled: [AtomicBool; ProviderId::ALL.len()],
 }
 
 impl Default for Control {
     fn default() -> Self {
         Self {
             refresh: AtomicBool::new(false),
-            claude_enabled: AtomicBool::new(true),
-            codex_enabled: AtomicBool::new(true),
+            enabled: std::array::from_fn(|_| AtomicBool::new(true)),
         }
     }
 }
@@ -63,15 +64,20 @@ impl Control {
         self.refresh.store(true, Ordering::Relaxed);
     }
 
-    /// A disabled provider is not polled at all. That matters most for Claude,
-    /// whose endpoint is rate-limited — there is no reason to spend requests on
-    /// something the dock is not showing.
+    /// A disabled provider is not polled at all. That matters most for Claude
+    /// and Copilot, whose endpoints are rate limited — there is no reason to
+    /// spend requests on something the dock is not showing.
     pub fn set_enabled_from(&self, settings: &crate::settings::Settings) {
-        use crate::providers::ProviderId;
-        self.claude_enabled
-            .store(settings.is_enabled(ProviderId::Claude), Ordering::Relaxed);
-        self.codex_enabled
-            .store(settings.is_enabled(ProviderId::Codex), Ordering::Relaxed);
+        for (slot, id) in self.enabled.iter().zip(ProviderId::ALL) {
+            slot.store(settings.is_enabled(id), Ordering::Relaxed);
+        }
+    }
+
+    fn is_enabled(&self, id: ProviderId) -> bool {
+        ProviderId::ALL
+            .iter()
+            .position(|p| *p == id)
+            .is_some_and(|i| self.enabled[i].load(Ordering::Relaxed))
     }
 
     fn take_refresh(&self) -> bool {
@@ -105,49 +111,80 @@ fn degrade(cached: Option<&CachedQuota>, reason: String) -> Reading {
     }
 }
 
+/// Records a fresh reading and persists it, so a later failure can fall back to
+/// it rather than showing blanks.
+fn accept(id: ProviderId, quota: Quota, at: chrono::DateTime<Utc>, last_good: &mut LastGood) {
+    last_good.set(
+        id,
+        CachedQuota {
+            quota,
+            observed_at: at,
+        },
+    );
+    let _ = store::save(last_good);
+}
+
 fn poll_claude(backoff: &mut Backoff, last_good: &mut LastGood) -> Reading {
+    let cached = |lg: &LastGood| lg.get(ProviderId::Claude).cloned();
+
     let creds = match claude::load_credentials() {
         Ok(c) => c,
-        Err(e) => return degrade(last_good.claude.as_ref(), e.to_string()),
+        Err(e) => return degrade(cached(last_good).as_ref(), e.to_string()),
     };
 
     if !creds.can_read_usage() {
         return degrade(
-            last_good.claude.as_ref(),
+            cached(last_good).as_ref(),
             "token lacks user:profile".to_string(),
         );
     }
     if creds.is_expired() {
-        return degrade(last_good.claude.as_ref(), "re-auth needed".to_string());
+        return degrade(cached(last_good).as_ref(), "re-auth needed".to_string());
     }
 
     match claude::fetch_usage(&creds) {
         Ok(quota) => {
             backoff.reset();
             let at = Utc::now();
-            last_good.claude = Some(CachedQuota {
-                quota: quota.clone(),
-                observed_at: at,
-            });
-            let _ = store::save(last_good);
+            accept(ProviderId::Claude, quota.clone(), at, last_good);
             Reading::Ok { quota, at }
         }
-        Err(claude::FetchError::RateLimited) => {
+        Err(FetchError::RateLimited) => {
             backoff.penalise();
-            degrade(last_good.claude.as_ref(), "rate limited".to_string())
+            degrade(cached(last_good).as_ref(), "rate limited".to_string())
         }
-        Err(e) => degrade(last_good.claude.as_ref(), e.to_string()),
+        Err(e) => degrade(cached(last_good).as_ref(), e.to_string()),
+    }
+}
+
+/// Copilot's endpoint is the one GitHub's editors use, so it is polled on the
+/// same cautious schedule as Claude rather than hammered.
+fn poll_copilot(backoff: &mut Backoff, last_good: &mut LastGood) -> Reading {
+    let cached = |lg: &LastGood| lg.get(ProviderId::Copilot).cloned();
+
+    let Some(token) = copilot::token() else {
+        return degrade(cached(last_good).as_ref(), "not signed in".to_string());
+    };
+
+    match copilot::fetch_usage(&token) {
+        Ok(quota) => {
+            backoff.reset();
+            let at = Utc::now();
+            accept(ProviderId::Copilot, quota.clone(), at, last_good);
+            Reading::Ok { quota, at }
+        }
+        Err(FetchError::RateLimited) => {
+            backoff.penalise();
+            degrade(cached(last_good).as_ref(), "rate limited".to_string())
+        }
+        Err(e) => degrade(cached(last_good).as_ref(), e.to_string()),
     }
 }
 
 fn poll_codex(last_good: &mut LastGood) -> Reading {
     match codex::latest_reading() {
         Ok(Some(r)) => {
-            last_good.codex = Some(CachedQuota {
-                quota: r.quota.clone(),
-                observed_at: r.observed_at,
-            });
-            let _ = store::save(last_good);
+            accept(ProviderId::Codex, r.quota.clone(), r.observed_at, last_good);
 
             // Codex only writes a snapshot when it runs, so the newest one can
             // easily describe a 5-hour window that has since elapsed. That is
@@ -172,63 +209,101 @@ fn poll_codex(last_good: &mut LastGood) -> Reading {
             }
         }
         Ok(None) => degrade(
-            last_good.codex.as_ref(),
+            last_good.get(ProviderId::Codex),
             "no recent Codex sessions".to_string(),
         ),
-        Err(e) => degrade(last_good.codex.as_ref(), e.to_string()),
+        Err(e) => degrade(last_good.get(ProviderId::Codex), e.to_string()),
     }
 }
 
 /// Seed the dock from disk so it shows last-known numbers immediately rather
 /// than blanks during the first poll.
 pub fn initial_snapshot(last_good: &LastGood) -> Snapshot {
-    let seed = |c: Option<&CachedQuota>| {
-        c.map(|c| Reading::Stale {
-            quota: c.quota.clone(),
-            at: c.observed_at,
-            reason: "loading".to_string(),
-        })
-        .unwrap_or(Reading::Never)
-    };
-    Snapshot {
-        claude: Some(seed(last_good.claude.as_ref())),
-        codex: Some(seed(last_good.codex.as_ref())),
+    let mut snapshot = Snapshot::default();
+    for id in readable() {
+        let reading = match last_good.get(id) {
+            Some(c) => Reading::Stale {
+                quota: c.quota.clone(),
+                at: c.observed_at,
+                reason: "loading".to_string(),
+            },
+            None => Reading::Never,
+        };
+        snapshot.set(id, reading);
+    }
+    snapshot
+}
+
+fn readable() -> impl Iterator<Item = ProviderId> {
+    ProviderId::ALL.into_iter().filter(|p| p.has_quota_source())
+}
+
+/// When a provider is next due, and — for the ones that talk to a rate-limited
+/// endpoint — how far it has backed off.
+struct Schedule {
+    next: Instant,
+    backoff: Backoff,
+    last_attempt: Option<Instant>,
+}
+
+impl Default for Schedule {
+    fn default() -> Self {
+        Self {
+            next: Instant::now(),
+            backoff: Backoff::new(),
+            last_attempt: None,
+        }
+    }
+}
+
+fn poll_one(id: ProviderId, schedule: &mut Schedule, last_good: &mut LastGood) -> Reading {
+    match id {
+        ProviderId::Claude => poll_claude(&mut schedule.backoff, last_good),
+        ProviderId::Copilot => poll_copilot(&mut schedule.backoff, last_good),
+        ProviderId::Codex => poll_codex(last_good),
+        // Filtered out by `readable`; a reading would be invented.
+        ProviderId::Gemini | ProviderId::Cursor => Reading::Failed {
+            reason: "no quota source".to_string(),
+        },
+    }
+}
+
+/// Codex is a local file read that cannot be rate limited, so it runs on a
+/// fixed interval. The endpoint-backed providers follow their own backoff.
+fn interval(id: ProviderId, schedule: &Schedule) -> Duration {
+    match id {
+        ProviderId::Codex => CODEX_INTERVAL,
+        _ => schedule.backoff.current(),
     }
 }
 
 pub fn spawn(shared: Arc<Mutex<Snapshot>>, control: Arc<Control>, ctx: egui::Context) {
     std::thread::spawn(move || {
         let mut last_good = store::load();
-        let mut claude_backoff = Backoff::new();
-        let mut last_claude_attempt: Option<Instant> = None;
-        let mut next_claude = Instant::now();
-        let mut next_codex = Instant::now();
+        let mut schedules: Vec<(ProviderId, Schedule)> =
+            readable().map(|id| (id, Schedule::default())).collect();
 
         loop {
             if control.take_refresh() {
-                next_codex = Instant::now();
-                // A manual refresh may pull the Claude poll forward, but never
-                // past the floor since the previous attempt.
-                next_claude = match last_claude_attempt {
-                    Some(prev) => (prev + FLOOR).max(Instant::now()),
-                    None => Instant::now(),
-                };
+                for (id, schedule) in &mut schedules {
+                    // A manual refresh may pull a poll forward, but never past
+                    // the floor since that provider's previous attempt.
+                    schedule.next = match (*id, schedule.last_attempt) {
+                        (ProviderId::Codex, _) | (_, None) => Instant::now(),
+                        (_, Some(prev)) => (prev + FLOOR).max(Instant::now()),
+                    };
+                }
             }
 
-            if Instant::now() >= next_claude && control.claude_enabled.load(Ordering::Relaxed) {
-                let reading = poll_claude(&mut claude_backoff, &mut last_good);
-                trace("claude", &reading);
-                shared.lock().unwrap().claude = Some(reading);
-                last_claude_attempt = Some(Instant::now());
-                next_claude = Instant::now() + claude_backoff.current();
-                ctx.request_repaint();
-            }
-
-            if Instant::now() >= next_codex && control.codex_enabled.load(Ordering::Relaxed) {
-                let reading = poll_codex(&mut last_good);
-                trace("codex", &reading);
-                shared.lock().unwrap().codex = Some(reading);
-                next_codex = Instant::now() + CODEX_INTERVAL;
+            for (id, schedule) in &mut schedules {
+                if Instant::now() < schedule.next || !control.is_enabled(*id) {
+                    continue;
+                }
+                let reading = poll_one(*id, schedule, &mut last_good);
+                trace(id.key(), &reading);
+                shared.lock().unwrap().set(*id, reading);
+                schedule.last_attempt = Some(Instant::now());
+                schedule.next = Instant::now() + interval(*id, schedule);
                 ctx.request_repaint();
             }
 

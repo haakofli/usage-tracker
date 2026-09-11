@@ -204,11 +204,17 @@ mod tests {
     #[test]
     fn an_empty_selection_is_respected() {
         let mut s = Settings::default();
-        s.set_enabled(ProviderId::Claude, false);
-        s.set_enabled(ProviderId::Codex, false);
+        // Driven off `has_quota_source` rather than a hardcoded pair, so gaining
+        // a provider does not quietly leave one ticked here.
+        let readable = || ProviderId::ALL.into_iter().filter(|p| p.has_quota_source());
+
+        for id in readable() {
+            s.set_enabled(id, false);
+        }
         assert_eq!(s.enabled.as_deref(), Some(&[][..]));
-        assert!(!s.is_enabled(ProviderId::Claude));
-        assert!(!s.is_enabled(ProviderId::Codex));
+        for id in readable() {
+            assert!(!s.is_enabled(id), "{} must stay off", id.label());
+        }
     }
 
     #[test]

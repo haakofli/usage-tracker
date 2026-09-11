@@ -1,5 +1,6 @@
 use crate::icons::Icons;
 use crate::model::{Quota, Reading, Snapshot, Window, format_reset_in};
+use crate::providers::ProviderId as Provider;
 use crate::settings::DockEdge;
 use chrono::{DateTime, Local, Utc};
 use egui::{
@@ -68,34 +69,21 @@ const MUTED: Color32 = Color32::from_rgb(108, 113, 124);
 /// Claude's own brand orange, as shipped in its mark.
 const CLAUDE_ORANGE: Color32 = Color32::from_rgb(217, 119, 87);
 const CODEX_WHITE: Color32 = Color32::from_rgb(226, 229, 234);
+/// Copilot's mark is monochrome by design, so it takes the same neutral as
+/// Codex rather than a brand colour it does not have.
+const COPILOT_WHITE: Color32 = Color32::from_rgb(226, 229, 234);
 
 const CALM: Color32 = Color32::from_rgb(94, 181, 155);
 const WARM: Color32 = Color32::from_rgb(214, 168, 92);
 const HOT: Color32 = Color32::from_rgb(212, 110, 110);
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Provider {
-    Claude,
-    Codex,
-}
-
-impl Provider {
-    /// Only used to key animation state, never rendered — the panel shows no
-    /// provider names, since the marks already identify the rows.
-    fn key(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
-    }
-
-    /// The marks are rasterised to neutral masks, so their brand colour is
-    /// applied here at paint time.
-    fn tint(self) -> Color32 {
-        match self {
-            Self::Claude => CLAUDE_ORANGE,
-            Self::Codex => CODEX_WHITE,
-        }
+/// The marks are rasterised to neutral masks, so their brand colour is applied
+/// here at paint time.
+fn tint(id: Provider) -> Color32 {
+    match id {
+        Provider::Claude => CLAUDE_ORANGE,
+        Provider::Copilot => COPILOT_WHITE,
+        _ => CODEX_WHITE,
     }
 }
 
@@ -237,15 +225,12 @@ fn gauge(ui: &egui::Ui, icons: &Icons, center: Pos2, g: Gauge<'_>, id: &str) {
 
     match g.provider {
         Some(p) => {
-            let tex = match p {
-                Provider::Claude => &icons.claude,
-                Provider::Codex => &icons.codex,
-            };
+            let tex = icons.for_provider(p);
             painter.image(
                 tex.id(),
                 Rect::from_center_size(center, Vec2::splat(MARK_D)),
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                dim(p.tint(), g.opacity),
+                dim(tint(p), g.opacity),
             );
         }
         None => {
@@ -297,11 +282,7 @@ fn has_expired_session(quota: Option<&Quota>, now: DateTime<Utc>) -> bool {
 }
 
 fn reading_for(snapshot: &Snapshot, provider: Provider) -> Reading {
-    match provider {
-        Provider::Claude => snapshot.claude.clone(),
-        Provider::Codex => snapshot.codex.clone(),
-    }
-    .unwrap_or(Reading::Never)
+    snapshot.get(provider).cloned().unwrap_or(Reading::Never)
 }
 
 /// One provider's row. The icon ring and its captions sit at a fixed position;
@@ -640,7 +621,7 @@ mod tests {
 
     #[test]
     fn claude_keeps_its_brand_orange() {
-        assert_eq!(Provider::Claude.tint(), CLAUDE_ORANGE);
-        assert_ne!(Provider::Codex.tint(), CLAUDE_ORANGE);
+        assert_eq!(tint(Provider::Claude), CLAUDE_ORANGE);
+        assert_ne!(tint(Provider::Codex), CLAUDE_ORANGE);
     }
 }

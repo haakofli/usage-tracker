@@ -1,6 +1,6 @@
 //! Which AI CLIs are on this machine, and which of them the dock shows.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProviderId {
     Claude,
     Codex,
@@ -46,12 +46,13 @@ impl ProviderId {
 
     /// Whether the dock can actually read a quota for this provider.
     ///
-    /// Detection and readability are separate questions: Copilot, Gemini and
-    /// Cursor are all detectable, but none of them publishes a local quota
-    /// snapshot the way Claude's usage endpoint and Codex's rollout files do,
-    /// so there is nothing to show even when they are installed.
+    /// Detection and readability are separate questions. Gemini publishes no
+    /// remaining-quota figure anywhere — its own CLI can only report the
+    /// current session — and Cursor's is behind an undocumented endpoint, so
+    /// both are listed but cannot be ticked. Inventing a ring for them would
+    /// read as real.
     pub fn has_quota_source(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex)
+        matches!(self, Self::Claude | Self::Codex | Self::Copilot)
     }
 
     /// Directory under the user profile that marks the CLI as installed.
@@ -76,7 +77,14 @@ impl ProviderId {
     }
 
     pub fn is_installed(self) -> bool {
-        home_dir_exists(self.home_marker()) || self.binaries().iter().any(|b| on_path(b))
+        if home_dir_exists(self.home_marker()) || self.binaries().iter().any(|b| on_path(b)) {
+            return true;
+        }
+        // Copilot is most often used through an editor extension, which leaves
+        // neither a CLI on `PATH` nor a `~/.copilot` directory — only a signed-in
+        // token. That token is the thing the dock actually needs, so finding one
+        // is better evidence than either of the above.
+        matches!(self, Self::Copilot) && crate::copilot::token().is_some()
     }
 }
 
@@ -144,13 +152,14 @@ mod tests {
         assert_eq!(ProviderId::from_key("nope"), None);
     }
 
-    /// Only the two providers with a reader may claim a quota source; the rest
-    /// would render as empty rings.
+    /// Only providers with a reader may claim a quota source; the rest would
+    /// render as empty rings that look like "nothing used".
     #[test]
     fn only_readable_providers_claim_a_quota_source() {
-        assert!(ProviderId::Claude.has_quota_source());
-        assert!(ProviderId::Codex.has_quota_source());
-        for p in [ProviderId::Copilot, ProviderId::Gemini, ProviderId::Cursor] {
+        for p in [ProviderId::Claude, ProviderId::Codex, ProviderId::Copilot] {
+            assert!(p.has_quota_source(), "{} has a reader", p.label());
+        }
+        for p in [ProviderId::Gemini, ProviderId::Cursor] {
             assert!(!p.has_quota_source(), "{} has no reader", p.label());
         }
     }

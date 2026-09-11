@@ -2,6 +2,8 @@
 
 mod claude;
 mod codex;
+mod copilot;
+mod http;
 mod icons;
 mod model;
 mod platform;
@@ -114,15 +116,11 @@ fn probe() {
 }
 
 /// Providers the dock can actually draw: enabled, and with a quota reader.
-fn shown_providers(settings: &Settings) -> Vec<ui::Provider> {
-    [
-        (providers::ProviderId::Claude, ui::Provider::Claude),
-        (providers::ProviderId::Codex, ui::Provider::Codex),
-    ]
-    .into_iter()
-    .filter(|(id, _)| settings.is_enabled(*id))
-    .map(|(_, p)| p)
-    .collect()
+fn shown_providers(settings: &Settings) -> Vec<providers::ProviderId> {
+    providers::ProviderId::ALL
+        .into_iter()
+        .filter(|id| id.has_quota_source() && settings.is_enabled(*id))
+        .collect()
 }
 
 struct Dock {
@@ -133,7 +131,7 @@ struct Dock {
     win: Option<platform::Window>,
     tray: Option<tray::Tray>,
     tooltip: Option<String>,
-    shown: Vec<ui::Provider>,
+    shown: Vec<providers::ProviderId>,
     zoom_keys: platform::ZoomKeys,
     width: f32,
     visible: bool,
@@ -224,11 +222,12 @@ impl Dock {
             }
         };
 
-        let body = format!(
-            "{}\n{}",
-            line("Claude", snapshot.claude.as_ref()),
-            line("Codex", snapshot.codex.as_ref())
-        );
+        let body = providers::ProviderId::ALL
+            .into_iter()
+            .filter(|id| id.has_quota_source())
+            .map(|id| line(id.label(), snapshot.get(id)))
+            .collect::<Vec<_>>()
+            .join("\n");
         if self.tooltip.as_deref() != Some(body.as_str()) {
             tray.set_tooltip(&body);
             self.tooltip = Some(body);

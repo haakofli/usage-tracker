@@ -2,7 +2,7 @@
 
 ![Usage Tracker — Your AI quota, at a glance.](assets/branding/readme-banner.svg)
 
-**A lightweight, always-on-top dock showing how much Claude and Codex quota you have left.**
+**A lightweight, always-on-top dock showing how much AI quota you have left.**
 
 [![Download](https://img.shields.io/badge/⬇%20Download-latest%20release-79D4B5?style=for-the-badge&labelColor=182725)](https://github.com/haakofli/usage-tracker/releases/latest)
 
@@ -17,7 +17,7 @@
 
 ## Features
 
-- **A ring per provider** — Claude and Codex, 5-hour window, with the time until it resets.
+- **A ring per provider** — Claude, Codex and Copilot, with the time until each resets.
 - **Hover for the week** — the weekly ring slides out alongside. The 5-hour rings never move, so opening the panel adds information rather than rearranging it.
 - **Colour tracks usage** — teal under 50%, amber to 80%, rose above.
 - **Out of the way** — attaches to a screen edge, passes clicks through outside the card, and keeps off the taskbar.
@@ -60,7 +60,9 @@ The binary lands in `target/release/`. Put it wherever you like; to have it come
 
 **Codex** — the `rate_limits` snapshot Codex already writes into `~/.codex/sessions/**/rollout-*.jsonl`. No subprocess, and it cannot be rate limited, but it is only as fresh as your last Codex request.
 
-Copilot, Gemini and Cursor are detected and listed, but publish no quota you can read locally, so they appear greyed out rather than as empty rings.
+**Copilot** — the premium-request allowance from `copilot_internal/user`, the endpoint GitHub's own editors call. Uses whichever sign-in you already have: `GH_TOKEN`, `gh`, or the editor extension's token.
+
+**Gemini** and **Cursor** are detected and listed, but greyed out. Gemini publishes no remaining-quota figure anywhere — [its own CLI cannot show one](https://github.com/google-gemini/gemini-cli/discussions/3096) — and Cursor's sits behind an undocumented endpoint. A ring for either would be a number this app made up.
 
 Polling intervals, rate-limit backoff and caching are covered in [docs/how-it-works.md](docs/how-it-works.md).
 
@@ -78,4 +80,4 @@ Rust and `eframe`/`egui` on the `glow` backend. A background thread polls each p
 
 [MIT](LICENSE) — free for any use.
 
-Provider marks are the trademarks of their respective owners, included to label their own quota: `assets/claude.svg` from [simple-icons](https://github.com/simple-icons/simple-icons) (CC0), `assets/codex.svg` from [gilbarbara/logos](https://github.com/gilbarbara/logos).
+Provider marks are the trademarks of their respective owners, included to label their own quota: `assets/claude.svg` and `assets/copilot.svg` from [simple-icons](https://github.com/simple-icons/simple-icons) (CC0), `assets/codex.svg` from [gilbarbara/logos](https://github.com/gilbarbara/logos).

@@ -2,6 +2,7 @@ use egui::{ColorImage, TextureHandle, TextureOptions};
 
 const CLAUDE_SVG: &str = include_str!("../assets/claude.svg");
 const CODEX_SVG: &str = include_str!("../assets/codex.svg");
+const COPILOT_SVG: &str = include_str!("../assets/copilot.svg");
 pub const APP_ICON_SVG: &str = include_str!("../assets/branding/app.svg");
 
 /// The mark the tray draws on this platform.
@@ -21,6 +22,7 @@ const RASTER: u32 = 128;
 pub struct Icons {
     pub claude: TextureHandle,
     pub codex: TextureHandle,
+    pub copilot: TextureHandle,
 }
 
 impl Icons {
@@ -28,6 +30,20 @@ impl Icons {
         Self {
             claude: upload(ctx, "claude-mark", CLAUDE_SVG),
             codex: upload(ctx, "codex-mark", CODEX_SVG),
+            copilot: upload(ctx, "copilot-mark", COPILOT_SVG),
+        }
+    }
+
+    /// The mark drawn on a provider's row.
+    pub fn for_provider(&self, id: crate::providers::ProviderId) -> &TextureHandle {
+        use crate::providers::ProviderId;
+        match id {
+            ProviderId::Claude => &self.claude,
+            ProviderId::Codex => &self.codex,
+            // Only readable providers are ever drawn, so the remainder simply
+            // reuses a mark rather than widening the struct for rows that
+            // cannot appear.
+            _ => &self.copilot,
         }
     }
 }
@@ -123,13 +139,19 @@ mod tests {
         assert_eq!(img.size, [RASTER as usize, RASTER as usize]);
     }
 
+    #[test]
+    fn rasterises_the_copilot_mark() {
+        let img = rasterise(COPILOT_SVG).expect("copilot svg should rasterise");
+        assert_eq!(img.size, [RASTER as usize, RASTER as usize]);
+    }
+
     /// Guards the tint contract. `ColorImage` stores premultiplied bytes, so a
     /// neutral white mask is RGB == alpha on every pixel; any colour surviving
     /// from the source artwork would tint wrong (the Claude mark ships in brand
     /// orange, so this is a real risk, not a theoretical one).
     #[test]
     fn marks_are_neutral_alpha_masks_with_real_coverage() {
-        for svg in [CLAUDE_SVG, CODEX_SVG] {
+        for svg in [CLAUDE_SVG, CODEX_SVG, COPILOT_SVG] {
             let img = rasterise(svg).unwrap();
             let px = img.as_raw();
             assert!(

@@ -1,4 +1,5 @@
 use crate::model::Quota;
+use crate::providers::ProviderId;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -9,12 +10,23 @@ pub struct CachedQuota {
     pub observed_at: DateTime<Utc>,
 }
 
+/// Keyed by [`ProviderId::key`], and flattened so the file keeps the shape it
+/// already had on disk — `{"claude": {...}, "codex": {...}}` — rather than
+/// discarding everyone's cache to gain a provider.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LastGood {
-    #[serde(default)]
-    pub claude: Option<CachedQuota>,
-    #[serde(default)]
-    pub codex: Option<CachedQuota>,
+    #[serde(flatten)]
+    entries: std::collections::BTreeMap<String, CachedQuota>,
+}
+
+impl LastGood {
+    pub fn get(&self, id: ProviderId) -> Option<&CachedQuota> {
+        self.entries.get(id.key())
+    }
+
+    pub fn set(&mut self, id: ProviderId, cached: CachedQuota) {
+        self.entries.insert(id.key().to_string(), cached);
+    }
 }
 
 fn store_path() -> Result<std::path::PathBuf> {
@@ -76,20 +88,30 @@ mod tests {
             },
             observed_at: Utc::now(),
         };
-        let lg = LastGood {
-            claude: Some(cached.clone()),
-            codex: Some(cached),
-        };
+        let mut lg = LastGood::default();
+        lg.set(ProviderId::Claude, cached.clone());
+        lg.set(ProviderId::Codex, cached);
+
         let encoded = serde_json::to_string(&lg).unwrap();
         let decoded: LastGood = serde_json::from_str(&encoded).unwrap();
-        assert!(decoded.claude.is_some());
-        assert!(decoded.codex.is_some());
+        assert!(decoded.get(ProviderId::Claude).is_some());
+        assert!(decoded.get(ProviderId::Codex).is_some());
+        assert!(decoded.get(ProviderId::Copilot).is_none());
+    }
+
+    /// The cache predates the move to a map, so a file written by an older
+    /// build must still load rather than resetting everyone to blanks.
+    #[test]
+    fn reads_the_shape_written_before_providers_were_keyed() {
+        let raw = r#"{"claude":{"quota":{"session":null,"weekly":null},"observed_at":"2026-09-01T10:00:00Z"}}"#;
+        let decoded: LastGood = serde_json::from_str(raw).expect("old cache must still parse");
+        assert!(decoded.get(ProviderId::Claude).is_some());
     }
 
     #[test]
     fn treats_unreadable_cache_as_empty() {
         let decoded: LastGood = serde_json::from_str("not json").unwrap_or_default();
-        assert!(decoded.claude.is_none());
-        assert!(decoded.codex.is_none());
+        assert!(decoded.get(ProviderId::Claude).is_none());
+        assert!(decoded.get(ProviderId::Codex).is_none());
     }
 }

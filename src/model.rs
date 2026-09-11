@@ -1,3 +1,4 @@
+use crate::providers::ProviderId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -54,10 +55,24 @@ impl Reading {
     }
 }
 
+/// What the poller has most recently learned, keyed by provider.
+///
+/// A map rather than a field per provider: the set of readable providers is
+/// already three and the dock should not need surgery in five places to gain a
+/// fourth.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
-    pub claude: Option<Reading>,
-    pub codex: Option<Reading>,
+    readings: std::collections::BTreeMap<ProviderId, Reading>,
+}
+
+impl Snapshot {
+    pub fn get(&self, id: ProviderId) -> Option<&Reading> {
+        self.readings.get(&id)
+    }
+
+    pub fn set(&mut self, id: ProviderId, reading: Reading) {
+        self.readings.insert(id, reading);
+    }
 }
 
 pub fn format_reset_in(resets_at: DateTime<Utc>, now: DateTime<Utc>) -> String {

@@ -33,6 +33,39 @@ request, which is why the tray tooltip reports the observation time.
 
 Codex polls every 60s, being a local file read.
 
+## Copilot
+
+`GET https://api.github.com/copilot_internal/user`, which reports
+`quota_snapshots.premium_interactions` — an `entitlement`, a `remaining`, a
+`percent_remaining` and a `quota_reset_date`.
+
+The published billing API was the obvious candidate and is the wrong one. It
+reports consumption after the fact with no allowance to measure it against,
+needs a classic PAT created by hand, and returns nothing at all for the
+org-licensed seats most people have. `copilot_internal/user` is undocumented but
+is what GitHub's own editor clients call, so it covers every seat type.
+
+The allowance is monthly and there is no second window, so it fills the rail's
+ring and leaves the hover ring empty. A plan with unlimited premium requests
+reports no remainder, and is shown as such rather than as a full ring — which
+would read as "none used".
+
+### Finding a token
+
+No new sign-in: whichever one is already on the machine, in order.
+
+| Source | Where |
+| --- | --- |
+| Environment | `GH_TOKEN`, `GITHUB_TOKEN` |
+| Editor extension | `%LOCALAPPDATA%\github-copilot\apps.json`, or `~/.config/github-copilot/` |
+| `gh` CLI | `~/.config/gh/hosts.yml` |
+
+The Copilot CLI stores its own token in the OS keychain whenever there is one.
+That copy is deliberately not read: a dock that shows a number is not worth a
+keychain prompt, and every other way of signing in leaves a plaintext copy.
+Without any of the above, Copilot reads "not signed in" rather than showing a
+guess.
+
 ## Staleness and caching
 
 A dimmed block with an amber dot means stale. Last-good readings are cached, so
@@ -49,15 +82,20 @@ The tray menu lists the AI CLIs found on this machine — detected from their
 config directory under your home directory, or their binary on `PATH`. Tick one
 to include it in the dock.
 
-Only **Claude** and **Codex** can actually be ticked. Detection and readability
-are separate questions: Copilot, Gemini and Cursor are detected and listed, but
-none of them publishes a quota you can read locally the way Claude's usage
-endpoint and Codex's rollout files do, so they appear greyed out rather than as
-empty rings — hiding them looked identical to failing to detect them.
+**Claude**, **Codex** and **Copilot** can be ticked. Copilot is also considered
+installed when only a token is found, since most people use it through an editor
+extension that leaves neither a CLI on `PATH` nor a `~/.copilot` directory.
+
+Detection and readability stay separate questions. **Gemini** publishes no
+remaining-quota figure at all — its own CLI can only report the current session,
+which its maintainers confirm — and **Cursor**'s is behind an undocumented
+endpoint plus a session token held in the editor's SQLite. Both are listed
+greyed rather than hidden, because hiding them looked identical to failing to
+detect them, and both are left unreadable rather than given an invented ring.
 
 Turning a provider off stops it being polled as well as drawn, which matters for
-Claude: there is no reason to spend rate-limited requests on something that is
-not on screen.
+Claude and Copilot: there is no reason to spend rate-limited requests on
+something that is not on screen.
 
 ## Rendering
 
