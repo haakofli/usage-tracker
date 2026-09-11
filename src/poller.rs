@@ -42,14 +42,36 @@ impl Backoff {
     }
 }
 
-#[derive(Default)]
 pub struct Control {
     refresh: AtomicBool,
+    claude_enabled: AtomicBool,
+    codex_enabled: AtomicBool,
+}
+
+impl Default for Control {
+    fn default() -> Self {
+        Self {
+            refresh: AtomicBool::new(false),
+            claude_enabled: AtomicBool::new(true),
+            codex_enabled: AtomicBool::new(true),
+        }
+    }
 }
 
 impl Control {
     pub fn request_refresh(&self) {
         self.refresh.store(true, Ordering::Relaxed);
+    }
+
+    /// A disabled provider is not polled at all. That matters most for Claude,
+    /// whose endpoint is rate-limited — there is no reason to spend requests on
+    /// something the dock is not showing.
+    pub fn set_enabled_from(&self, settings: &crate::settings::Settings) {
+        use crate::providers::ProviderId;
+        self.claude_enabled
+            .store(settings.is_enabled(ProviderId::Claude), Ordering::Relaxed);
+        self.codex_enabled
+            .store(settings.is_enabled(ProviderId::Codex), Ordering::Relaxed);
     }
 
     fn take_refresh(&self) -> bool {
@@ -175,7 +197,7 @@ pub fn spawn(shared: Arc<Mutex<Snapshot>>, control: Arc<Control>, ctx: egui::Con
                 };
             }
 
-            if Instant::now() >= next_claude {
+            if Instant::now() >= next_claude && control.claude_enabled.load(Ordering::Relaxed) {
                 let reading = poll_claude(&mut claude_backoff, &mut last_good);
                 trace("claude", &reading);
                 shared.lock().unwrap().claude = Some(reading);
@@ -184,7 +206,7 @@ pub fn spawn(shared: Arc<Mutex<Snapshot>>, control: Arc<Control>, ctx: egui::Con
                 ctx.request_repaint();
             }
 
-            if Instant::now() >= next_codex {
+            if Instant::now() >= next_codex && control.codex_enabled.load(Ordering::Relaxed) {
                 let reading = poll_codex(&mut last_good);
                 trace("codex", &reading);
                 shared.lock().unwrap().codex = Some(reading);

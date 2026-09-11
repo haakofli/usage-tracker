@@ -25,14 +25,26 @@ const COL_SPACING: f32 = 70.0;
 const COL_W: f32 = 66.0;
 const PANEL_CARD_W: f32 = PANEL_PAD * 2.0 + COL_SPACING + RING_D + (COL_W - RING_D) / 2.0;
 
-pub const RAIL_W: f32 = RAIL_CARD_W + MARGIN * 2.0;
 pub const PANEL_W: f32 = PANEL_CARD_W + MARGIN * 2.0;
 
 const BLOCK_H: f32 = RING_D + 5.0 + 11.0 + 11.0;
 const BLOCK_GAP: f32 = 26.0;
-/// The card never changes height — only its width animates.
-const CARD_H: f32 = BLOCK_H * 2.0 + BLOCK_GAP + 48.0;
-pub const WINDOW_H: f32 = CARD_H + MARGIN * 2.0;
+const CARD_PAD_V: f32 = 24.0;
+
+/// Card height for `n` provider rows. The card never changes height while
+/// hovering — only its width animates — but it does resize when providers are
+/// switched on or off in the tray.
+pub fn card_height(n: usize) -> f32 {
+    let rows = n.max(1) as f32;
+    BLOCK_H * rows + BLOCK_GAP * (rows - 1.0) + CARD_PAD_V * 2.0
+}
+
+/// The window is sized for the largest card the dock can show, and never
+/// resized while hovering — resizing recreates the GL surface mid-animation,
+/// which is what made the hover stutter.
+pub fn window_height(n: usize) -> f32 {
+    card_height(n) + MARGIN * 2.0
+}
 
 /// Callers positioning the window need to know how far the card is inset, so
 /// they can hang the shadow margin off the screen edge.
@@ -41,8 +53,6 @@ pub const fn shadow_margin() -> f32 {
 }
 
 const CARD_RADIUS: u8 = 16;
-/// Width of the drag-to-resize strip on the card's inner edge.
-const RESIZE_GRIP: f32 = 7.0;
 const RING_TRACK_W: f32 = 3.0;
 const RING_FILL_W: f32 = 3.4;
 const MARK_D: f32 = RING_D * 0.56;
@@ -266,17 +276,12 @@ fn quota_of(reading: &Reading) -> Option<&Quota> {
     reading.quota()
 }
 
-fn providers(snapshot: &Snapshot) -> [(Provider, Reading); 2] {
-    [
-        (
-            Provider::Claude,
-            snapshot.claude.clone().unwrap_or(Reading::Never),
-        ),
-        (
-            Provider::Codex,
-            snapshot.codex.clone().unwrap_or(Reading::Never),
-        ),
-    ]
+fn reading_for(snapshot: &Snapshot, provider: Provider) -> Reading {
+    match provider {
+        Provider::Claude => snapshot.claude.clone(),
+        Provider::Codex => snapshot.codex.clone(),
+    }
+    .unwrap_or(Reading::Never)
 }
 
 /// One provider's row. The icon ring and its captions sit at a fixed position;
@@ -391,12 +396,6 @@ fn card_radius(edge: DockEdge) -> CornerRadius {
 pub struct Frame {
     /// The painted card, in points: what to hit-test hover against.
     pub card: Rect,
-    /// Strip along the card's inner edge that resizes instead of moving.
-    pub resize_handle: Rect,
-    /// Window width the current state needs, in points. Held at the panel
-    /// width for the whole animation so the window is resized twice per hover
-    /// cycle rather than once per frame.
-    pub wanted_width: f32,
     /// True while the width is still moving, so the caller keeps repainting.
     pub animating: bool,
 }
@@ -405,11 +404,13 @@ pub fn draw(
     ui: &mut egui::Ui,
     icons: &Icons,
     snapshot: &Snapshot,
+    shown: &[Provider],
     expanded: bool,
     edge: DockEdge,
 ) -> Frame {
     let now = Utc::now();
     let full = ui.max_rect();
+    let card_h = card_height(shown.len());
 
     // One eased 0..1 drives the width and the weekly column's slide and fade,
     // so the panel opens as a single gesture. Short, because it should feel
@@ -428,7 +429,7 @@ pub fn draw(
     };
     let card = Rect::from_min_size(
         Pos2::new(card_x, full.min.y + MARGIN),
-        Vec2::new(card_w, CARD_H),
+        Vec2::new(card_w, card_h),
     );
 
     let radius = card_radius(edge);
@@ -456,10 +457,25 @@ pub fn draw(
         DockEdge::Left => icon_cx + COL_SPACING * t,
     };
 
-    let total = BLOCK_H * 2.0 + BLOCK_GAP;
-    let mut top = card.min.y + (CARD_H - total) / 2.0;
+    if shown.is_empty() {
+        text(
+            ui.painter(),
+            card.center(),
+            Align2::CENTER_CENTER,
+            "no providers",
+            9.0,
+            0.4,
+            MUTED,
+            card.width() - 12.0,
+        );
+    }
 
-    for (provider, reading) in providers(snapshot) {
+    let rows = shown.len() as f32;
+    let total = BLOCK_H * rows + BLOCK_GAP * (rows - 1.0).max(0.0);
+    let mut top = card.min.y + (card_h - total) / 2.0;
+
+    for &provider in shown {
+        let reading = reading_for(snapshot, provider);
         draw_provider_block(
             ui,
             icons,
@@ -473,25 +489,8 @@ pub fn draw(
         top += BLOCK_H + BLOCK_GAP;
     }
 
-    // Full width while opening, open or closing; back to the rail only once
-    // fully collapsed, so the growing card is never clipped by the window.
-    let wanted_width = if t > 0.0 { PANEL_W } else { RAIL_W };
-
-    // Grab strip on the side facing away from the screen edge — the only side
-    // the pointer can actually reach.
-    let resize_handle = match edge {
-        DockEdge::Right => {
-            Rect::from_min_max(card.min, Pos2::new(card.min.x + RESIZE_GRIP, card.max.y))
-        }
-        DockEdge::Left => {
-            Rect::from_min_max(Pos2::new(card.max.x - RESIZE_GRIP, card.min.y), card.max)
-        }
-    };
-
     Frame {
         card,
-        resize_handle,
-        wanted_width,
         animating: t > 0.0 && t < 1.0,
     }
 }

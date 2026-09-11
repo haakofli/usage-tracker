@@ -5,6 +5,7 @@ mod codex;
 mod icons;
 mod model;
 mod poller;
+mod providers;
 mod settings;
 mod store;
 mod tray;
@@ -43,10 +44,15 @@ fn main() -> eframe::Result {
         return Ok(());
     }
 
-    // Starts collapsed. The window is resized only when the hover state
-    // settles, never during the animation.
+    // Sized for the expanded panel and never resized while hovering: only the
+    // painted card animates, so the GL surface is left alone.
+    let initial = settings::load();
+    let rows = [providers::ProviderId::Claude, providers::ProviderId::Codex]
+        .into_iter()
+        .filter(|p| initial.is_enabled(*p))
+        .count();
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([ui::RAIL_W, ui::WINDOW_H])
+        .with_inner_size([ui::PANEL_W, ui::window_height(rows)])
         .with_decorations(false)
         .with_transparent(true)
         .with_has_shadow(false)
@@ -107,6 +113,18 @@ fn probe() {
     }
 }
 
+/// Providers the dock can actually draw: enabled, and with a quota reader.
+fn shown_providers(settings: &Settings) -> Vec<ui::Provider> {
+    [
+        (providers::ProviderId::Claude, ui::Provider::Claude),
+        (providers::ProviderId::Codex, ui::Provider::Codex),
+    ]
+    .into_iter()
+    .filter(|(id, _)| settings.is_enabled(*id))
+    .map(|(_, p)| p)
+    .collect()
+}
+
 struct Dock {
     snapshot: Arc<Mutex<Snapshot>>,
     control: Arc<poller::Control>,
@@ -115,13 +133,14 @@ struct Dock {
     win: Option<winshape::Window>,
     tray: Option<tray::Tray>,
     tooltip: Option<String>,
+    shown: Vec<ui::Provider>,
+    zoom_keys: winshape::ZoomKeys,
     width: f32,
     visible: bool,
     placed: bool,
     frames: u32,
     expanded: bool,
     dragging: bool,
-    resizing: bool,
     pending_resize: bool,
     pending_reposition: bool,
     last_monitor: Option<egui::Vec2>,
@@ -147,21 +166,27 @@ impl Dock {
         }
         cc.egui_ctx.set_zoom_factor(settings.scale);
 
+        let installed = providers::installed();
+        let shown = shown_providers(&settings);
+        control.set_enabled_from(&settings);
+        let tray = tray::Tray::new(&settings, &installed);
+
         Self {
             snapshot,
             control,
             settings,
             icons: icons::Icons::load(&cc.egui_ctx),
             win: None,
-            tray: tray::Tray::new(),
+            tray,
             tooltip: None,
-            width: ui::RAIL_W,
+            shown,
+            zoom_keys: winshape::ZoomKeys::default(),
+            width: ui::PANEL_W,
             visible: true,
             placed: false,
             frames: 0,
             expanded: false,
             dragging: false,
-            resizing: false,
             pending_resize: true,
             pending_reposition: false,
             last_monitor: None,
@@ -219,6 +244,19 @@ impl Dock {
             tray::Action::Toggle => self.visible = !self.visible,
             tray::Action::Show => self.visible = true,
             tray::Action::Hide => self.visible = false,
+            tray::Action::SetProvider(id, on) => {
+                self.settings.set_enabled(id, on);
+                let _ = settings::save(&self.settings);
+                self.shown = shown_providers(&self.settings);
+                self.control.set_enabled_from(&self.settings);
+                // The card grows or shrinks by a row, so the window has to
+                // follow and be re-pinned to its edge.
+                self.pending_resize = true;
+                if let Some(tray) = self.tray.as_ref() {
+                    tray.sync_provider_checks(&self.settings);
+                }
+                return;
+            }
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.visible));
         if self.visible {
@@ -231,7 +269,7 @@ impl Dock {
     }
 
     fn window_size(&self) -> egui::Vec2 {
-        egui::vec2(self.width, ui::WINDOW_H)
+        egui::vec2(self.width, ui::window_height(self.shown.len()))
     }
 
     /// Scaling rides on egui's zoom factor, so the layout stays in points and
@@ -248,15 +286,18 @@ impl Dock {
         self.pending_resize = true;
     }
 
-    fn resize_to(&mut self, ctx: &egui::Context, width: f32) {
-        if (width - self.width).abs() < 0.5 && !self.pending_resize {
+    /// Applies the window size. Only runs when something other than hovering
+    /// changed it — the provider count or the scale — never during the hover
+    /// animation, since resizing recreates the GL surface and stutters.
+    fn apply_size(&mut self, ctx: &egui::Context) {
+        if !self.pending_resize {
             return;
         }
         self.pending_resize = false;
-        self.width = width;
+        self.width = ui::PANEL_W;
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-            width,
-            ui::WINDOW_H,
+            self.width,
+            ui::window_height(self.shown.len()),
         )));
         // Docked right, a wider window has to start further left to keep its
         // right edge pinned to the screen.
@@ -400,31 +441,31 @@ impl eframe::App for Dock {
             ui,
             &self.icons,
             &snapshot,
+            &self.shown,
             self.expanded,
             self.settings.edge,
         );
 
-        // Clip the window to the card, so the fixed expanded footprint does not
-        // swallow clicks over the transparent gap. Inflated by the shadow
-        // margin because a window region clips painting as well as input, and
-        // a tight clip would shear the card's shadow off.
+        self.apply_size(&ctx);
+
         let ppp = ctx.pixels_per_point();
         let origin = ui.max_rect().min;
 
-        // Resize the real window rather than clipping it with a region: a
-        // window region makes Windows paint its frame along the region edge,
-        // which showed as a white bar above the card and flashed down the side
-        // as the panel opened. This changes size twice per hover cycle, never
-        // mid-animation, so the GL surface is not churned.
-        self.resize_to(&ctx, frame_info.wanted_width);
+        // Mouse input is restricted to the painted card. The window itself is
+        // never resized while hovering — that recreates the GL surface and made
+        // the animation stutter — so the rest of it is transparent and must not
+        // swallow clicks meant for what is behind.
+        let local = frame_info.card.translate(-origin.to_vec2());
+        winshape::set_hit_rect(
+            (local.min.x * ppp).floor() as i32,
+            (local.min.y * ppp).floor() as i32,
+            (local.max.x * ppp).ceil() as i32,
+            (local.max.y * ppp).ceil() as i32,
+        );
 
-        // Hover comes from the real cursor, not egui's enter/leave events, and
-        // is judged against the painted card so the transparent gap never
-        // triggers the panel. Instant in both directions.
-        // Not while dragging or resizing: a resize drag pulls the pointer off
-        // the card by design, and re-deriving hover from that would collapse
-        // the dock out from under the drag.
-        if !self.dragging && !self.resizing {
+        // Hover comes from the real cursor, not egui's enter/leave events.
+        // Instant in both directions.
+        if !self.dragging {
             let inside = self
                 .win
                 .as_ref()
@@ -445,53 +486,36 @@ impl eframe::App for Dock {
             ctx.request_repaint();
         }
 
+        // Ctrl +/- resizes while the pointer is over the dock. Read from the
+        // keyboard directly, since the dock never takes focus; gating on hover
+        // keeps the shortcut working normally everywhere else.
+        if self.expanded {
+            if let Some(key) = self.zoom_keys.poll() {
+                let next = match key {
+                    winshape::ZoomKey::Bigger => self.settings.scale + 0.1,
+                    winshape::ZoomKey::Smaller => self.settings.scale - 0.1,
+                    winshape::ZoomKey::Reset => 1.0,
+                };
+                self.set_scale(&ctx, next);
+                let _ = settings::save(&self.settings);
+            }
+        } else {
+            self.zoom_keys.poll();
+        }
+
         let response = ui.interact(
             frame_info.card,
             egui::Id::new("dock-root"),
             egui::Sense::click_and_drag(),
         );
 
-        // A drag that starts on the inner edge resizes; anywhere else moves.
-        let on_grip = ctx
-            .input(|i| i.pointer.latest_pos())
-            .is_some_and(|p| frame_info.resize_handle.contains(p));
-        if on_grip || self.resizing {
-            ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        }
-
         if response.drag_started() {
-            if on_grip {
-                self.resizing = true;
-            } else {
-                self.dragging = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            }
+            self.dragging = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
-
-        if self.resizing {
-            // Dragging away from the screen edge grows the dock.
-            let dx = response.drag_delta().x;
-            let outward = match self.settings.edge {
-                DockEdge::Right => -dx,
-                DockEdge::Left => dx,
-            };
-            if outward != 0.0 {
-                self.set_scale(&ctx, self.settings.scale * (1.0 + outward / 220.0));
-            }
-            if response.drag_stopped() || !response.dragged() {
-                self.resizing = false;
-                let _ = settings::save(&self.settings);
-            }
-        } else if self.dragging && !response.dragged() && !response.drag_started() {
+        if self.dragging && !response.dragged() && !response.drag_started() {
             self.dragging = false;
             self.snap_after_drag(&ctx);
-        }
-
-        // Wheel over the dock scales too — quicker than finding the grip.
-        let wheel = ctx.input(|i| i.smooth_scroll_delta.y);
-        if wheel != 0.0 && self.expanded {
-            self.set_scale(&ctx, self.settings.scale * (1.0 + wheel / 900.0));
-            let _ = settings::save(&self.settings);
         }
 
         response.context_menu(|menu| {

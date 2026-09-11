@@ -45,14 +45,34 @@ it at login. Per-user, no admin rights.
 |---|---|
 | See weekly quota | Hover the dock |
 | Move it | Drag it; it attaches to whichever screen edge you release it near |
-| Resize | Drag the inner edge, or scroll over it while expanded |
+| Resize | Hover it, then **Ctrl +** / **Ctrl −** (**Ctrl 0** resets) |
+| Choose providers | Tray menu — tick the ones to show |
 | Refresh now | Right-click → **Refresh now** |
 | Switch edge | Right-click → **Attach to left/right edge** |
 | Hide / show | Left-click the tray icon, or its menu |
 | Quit | Right-click → **Quit**, or the tray menu |
 
+The zoom keys only act while the pointer is over the dock, so Ctrl +/- keeps
+working normally everywhere else.
+
 The tray tooltip carries both percentages plus when each reading was taken.
-Position, edge and size persist across restarts.
+Position, edge, size and provider choice persist across restarts.
+
+## Providers
+
+The tray menu lists the AI CLIs found on this machine — detected from their
+config directory under your profile, or their binary on `PATH`. Tick one to
+include it in the dock.
+
+Only **Claude** and **Codex** can actually be ticked. Detection and readability
+are separate questions: Copilot, Gemini and Cursor are detected and listed, but
+none of them publishes a quota you can read locally the way Claude's usage
+endpoint and Codex's rollout files do, so they appear greyed out rather than as
+empty rings.
+
+Turning a provider off stops it being polled as well as drawn, which matters
+for Claude — there is no reason to spend rate-limited requests on something
+that is not on screen.
 
 ## Where the numbers come from
 
@@ -90,7 +110,7 @@ yesterday's numbers rather than blanks.
 
 ```powershell
 cargo run              # run it
-cargo test             # 55 tests
+cargo test             # 64 tests
 cargo run -- --probe   # print raw provider responses once, for diagnosis
 ```
 
