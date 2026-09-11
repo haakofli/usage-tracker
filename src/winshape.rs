@@ -7,14 +7,17 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
 };
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, GetCursorPos,
     GetWindowLongPtrW, GetWindowRect, HTTRANSPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WM_NCCALCSIZE, WM_NCHITTEST,
-    WNDPROC, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
-    WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_THICKFRAME, WindowFromPoint,
+    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WM_NCACTIVATE, WM_NCCALCSIZE,
+    WM_NCHITTEST, WM_NCPAINT, WNDPROC, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE,
+    WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_THICKFRAME, WindowFromPoint,
 };
 use windows::core::{PCSTR, w};
 
@@ -47,6 +50,28 @@ impl Window {
     pub fn refresh_border_suppression(&self) {
         if let Some(hwnd) = self.hwnd {
             suppress_dwm_border(hwnd);
+        }
+    }
+
+    /// Bounds of the monitor this window is on, in **physical pixels**.
+    ///
+    /// Asked of Win32 rather than egui on purpose. `ViewportInfo::monitor_size`
+    /// is in zoom-inclusive points *and* lags a frame behind a zoom change, so
+    /// anchoring to it drifted further from the screen edge with every zoom
+    /// step. Physical pixels do not move when the zoom does.
+    pub fn monitor_rect_px(&self) -> Option<(i32, i32, i32, i32)> {
+        let hwnd = self.hwnd?;
+        unsafe {
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return None;
+            }
+            let r = info.rcMonitor;
+            Some((r.left, r.top, r.right, r.bottom))
         }
     }
 
@@ -222,6 +247,18 @@ unsafe extern "system" fn subclass_proc(
     // wparam != 0 means the client rect is being proposed; returning 0 accepts
     // the whole window as client area.
     if msg == WM_NCCALCSIZE && wparam.0 != 0 {
+        return LRESULT(0);
+    }
+
+    // Collapsing the non-client area is not enough on its own: Windows still
+    // repaints the frame when activation changes, and opening the tray menu
+    // changes activation — which is why a real title bar, complete with
+    // working buttons, appeared over the dock, but only sometimes. Refusing
+    // both the activation redraw and non-client painting outright stops it.
+    if msg == WM_NCACTIVATE {
+        return LRESULT(1);
+    }
+    if msg == WM_NCPAINT {
         return LRESULT(0);
     }
 

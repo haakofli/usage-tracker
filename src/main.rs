@@ -143,7 +143,7 @@ struct Dock {
     dragging: bool,
     pending_resize: bool,
     pending_reposition: bool,
-    last_monitor: Option<egui::Vec2>,
+    last_monitor: Option<(i32, i32, i32, i32)>,
 }
 
 impl Dock {
@@ -169,7 +169,7 @@ impl Dock {
         let installed = providers::installed();
         let shown = shown_providers(&settings);
         control.set_enabled_from(&settings);
-        let tray = tray::Tray::new(&settings, &installed);
+        let tray = tray::Tray::new(&settings, &installed, &cc.egui_ctx);
 
         Self {
             snapshot,
@@ -233,33 +233,42 @@ impl Dock {
 
     /// The tray is the only durable handle on a hidden, taskbar-less window.
     fn handle_tray(&mut self, ctx: &egui::Context) {
-        let Some(action) = self.tray.as_ref().and_then(tray::Tray::poll) else {
-            return;
+        let actions = match self.tray.as_ref() {
+            Some(tray) => tray.take_actions(),
+            None => return,
         };
-        match action {
-            tray::Action::Quit => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
-            }
-            tray::Action::Refresh => {
-                self.control.request_refresh();
-                return;
-            }
-            tray::Action::Toggle => self.visible = !self.visible,
-            tray::Action::SetProvider(id, on) => {
-                self.settings.set_enabled(id, on);
-                let _ = settings::save(&self.settings);
-                self.shown = shown_providers(&self.settings);
-                self.control.set_enabled_from(&self.settings);
-                // The card grows or shrinks by a row, so the window has to
-                // follow and be re-pinned to its edge.
-                self.pending_resize = true;
-                if let Some(tray) = self.tray.as_ref() {
-                    tray.sync_provider_checks(&self.settings);
+
+        for action in actions {
+            match action {
+                tray::Action::Quit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
                 }
-                return;
+                tray::Action::Refresh => self.control.request_refresh(),
+                tray::Action::Toggle => {
+                    self.visible = !self.visible;
+                    self.apply_visibility(ctx);
+                }
+                tray::Action::SetProvider(id, on) => {
+                    if self.settings.is_enabled(id) == on {
+                        continue;
+                    }
+                    self.settings.set_enabled(id, on);
+                    let _ = settings::save(&self.settings);
+                    self.shown = shown_providers(&self.settings);
+                    self.control.set_enabled_from(&self.settings);
+                    // The card gains or loses a row, so the window has to
+                    // follow and be re-pinned to its edge.
+                    self.pending_resize = true;
+                    if let Some(tray) = self.tray.as_ref() {
+                        tray.sync_provider_checks(&self.settings);
+                    }
+                }
             }
         }
+    }
+
+    fn apply_visibility(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.visible));
         if self.visible {
             // Re-assert topmost: a hidden window can lose its z-order.
@@ -338,12 +347,14 @@ impl Dock {
     /// It is also not populated every frame, and a miss used to make
     /// `reposition` silently do nothing, leaving the window sized for one state
     /// but positioned for another — so the last known value is kept.
-    fn monitor_native(&mut self, ctx: &egui::Context) -> Option<egui::Vec2> {
-        if let Some(m) = ctx
-            .input(|i| i.viewport().monitor_size)
-            .filter(|m| m.x > 0.0 && m.y > 0.0)
+    fn monitor_px(&mut self, ctx: &egui::Context) -> Option<(i32, i32, i32, i32)> {
+        let _ = ctx;
+        if let Some(rect) = self
+            .win
+            .as_ref()
+            .and_then(winshape::Window::monitor_rect_px)
         {
-            self.last_monitor = Some(m);
+            self.last_monitor = Some(rect);
         }
         self.last_monitor
     }
@@ -352,54 +363,62 @@ impl Dock {
         ctx.zoom_factor().max(0.01)
     }
 
-    /// Window size in native points, i.e. independent of the zoom.
-    fn size_native(&self, ctx: &egui::Context) -> egui::Vec2 {
-        let zoom = Self::zoom(ctx);
-        egui::vec2(
-            ui::PANEL_W * zoom,
-            ui::window_height(self.shown.len()) * zoom,
-        )
-    }
+    /// Where the window should sit, in **physical pixels**.
+    ///
+    /// All geometry is kept in physical pixels because they are the only unit
+    /// that does not shift when the zoom changes. The docked edge stays flush
+    /// with the screen and the top edge stays put, so the dock grows downwards
+    /// and inwards: leftwards when docked right, rightwards when docked left.
+    fn anchor_px(&self, ctx: &egui::Context, monitor: (i32, i32, i32, i32)) -> (f32, f32) {
+        let ppp = ctx.pixels_per_point();
+        let (left, top, right, _bottom) = monitor;
+        let width_px = ui::PANEL_W * ppp;
+        let margin_px = ui::shadow_margin() * ppp;
 
-    /// Top-left in native points such that the docked edge stays flush with the
-    /// screen and the top edge stays put. Growth therefore runs downwards, and
-    /// inwards from the docked side: leftwards when docked right, rightwards
-    /// when docked left.
-    fn anchor_native(&self, ctx: &egui::Context, monitor: egui::Vec2) -> egui::Pos2 {
-        let zoom = Self::zoom(ctx);
-        let margin = ui::shadow_margin() * zoom;
         let x = match self.settings.edge {
-            DockEdge::Right => monitor.x - self.size_native(ctx).x + margin,
-            DockEdge::Left => -margin,
+            DockEdge::Right => right as f32 - width_px + margin_px,
+            DockEdge::Left => left as f32 - margin_px,
         };
-        egui::pos2(x, self.settings.top)
+        (x, top as f32 + self.settings.top)
     }
 
     /// Re-pins the window to its docked edge. Retries on the next frame if the
     /// monitor size is not known yet, so the window is never left sized for one
     /// state but positioned for another.
     fn reposition(&mut self, ctx: &egui::Context) {
-        let Some(monitor) = self.monitor_native(ctx) else {
+        let Some(monitor) = self.monitor_px(ctx) else {
             self.pending_reposition = true;
             return;
         };
         self.pending_reposition = false;
-        let anchor = self.anchor_native(ctx, monitor);
-        // The command wants zoom-inclusive points; the anchor is native, so the
-        // single conversion happens here.
-        let zoom = Self::zoom(ctx);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(anchor / zoom));
+        let (x_px, y_px) = self.anchor_px(ctx, monitor);
+        let ppp = ctx.pixels_per_point();
+        if std::env::var("DOCK_DIAG").is_ok() {
+            eprintln!(
+                "[pos] zoom={:.2} ppp={ppp:.2} monitor_px={monitor:?} anchor_px=({x_px:.0},{y_px:.0}) sending_pts=({:.1},{:.1})",
+                Self::zoom(ctx),
+                x_px / ppp,
+                y_px / ppp,
+            );
+        }
+        // Viewport commands take points, so convert once here.
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            x_px / ppp,
+            y_px / ppp,
+        )));
     }
 
     fn place(&mut self, ctx: &egui::Context) {
         if self.placed && !self.pending_reposition {
             return;
         }
-        let Some(monitor) = self.monitor_native(ctx) else {
+        let Some(monitor) = self.monitor_px(ctx) else {
             return;
         };
-        let height = self.size_native(ctx).y;
-        self.settings.top = self.settings.top.clamp(0.0, (monitor.y - height).max(0.0));
+        let (_, top, _, bottom) = monitor;
+        let height_px = ui::window_height(self.shown.len()) * ctx.pixels_per_point();
+        let room = ((bottom - top) as f32 - height_px).max(0.0);
+        self.settings.top = self.settings.top.clamp(0.0, room);
         self.reposition(ctx);
         self.placed = true;
     }
@@ -407,21 +426,28 @@ impl Dock {
     /// After a drag, attach to whichever edge the dock was released nearest and
     /// remember it, so it comes back attached next launch.
     fn snap_after_drag(&mut self, ctx: &egui::Context) {
-        let Some(monitor) = self.monitor_native(ctx) else {
+        let Some(monitor) = self.monitor_px(ctx) else {
             return;
         };
         let Some(outer) = ctx.input(|i| i.viewport().outer_rect) else {
             return;
         };
 
-        // `outer_rect` is in zoom-inclusive points; stored geometry is native.
-        let zoom = Self::zoom(ctx);
-        let size = self.size_native(ctx);
-        let left_native = outer.min.x * zoom;
-        let top_native = outer.min.y * zoom;
+        // `outer_rect` is in points; stored geometry is physical pixels.
+        let ppp = ctx.pixels_per_point();
+        let (mon_left, mon_top, mon_right, mon_bottom) = monitor;
+        let left_px = outer.min.x * ppp;
+        let top_px = outer.min.y * ppp;
+        let width_px = ui::PANEL_W * ppp;
+        let height_px = ui::window_height(self.shown.len()) * ppp;
 
-        self.settings.edge = DockEdge::nearest(left_native, size.x, monitor.x);
-        self.settings.top = top_native.clamp(0.0, (monitor.y - size.y).max(0.0));
+        self.settings.edge = DockEdge::nearest(
+            left_px - mon_left as f32,
+            width_px,
+            (mon_right - mon_left) as f32,
+        );
+        let room = ((mon_bottom - mon_top) as f32 - height_px).max(0.0);
+        self.settings.top = (top_px - mon_top as f32).clamp(0.0, room);
         self.reposition(ctx);
         let _ = settings::save(&self.settings);
     }
@@ -442,10 +468,6 @@ impl eframe::App for Dock {
 
         let snapshot = self.snapshot.lock().unwrap().clone();
         self.update_tooltip(&snapshot);
-
-        // Heartbeat: `logic` only runs again if a repaint was requested, so
-        // this is what keeps the tray alive while the dock is hidden.
-        ctx.request_repaint_after(Duration::from_millis(150));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
