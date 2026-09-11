@@ -615,7 +615,10 @@ mod tests {
             used: 1.0,
             resets_at: now + chrono::Duration::minutes(5),
         };
-        assert!(live(Some(&expired), now).is_none(), "expired must be hidden");
+        assert!(
+            live(Some(&expired), now).is_none(),
+            "expired must be hidden"
+        );
         assert!(live(Some(&current), now).is_some(), "current must be shown");
         assert!(live(None, now).is_none());
     }

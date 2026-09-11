@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>Usage Tracker</title>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="#182725"/>
+  <circle cx="512" cy="512" r="252" fill="none" stroke="#344B46" stroke-width="76"/>
+  <path d="M512 260 A252 252 0 1 1 260 512" fill="none" stroke="#79D4B5" stroke-width="76" stroke-linecap="round"/>
+  <path d="M456 562 V498 M568 562 V430" fill="none" stroke="#ECF5EF" stroke-width="64" stroke-linecap="round"/>
+</svg>

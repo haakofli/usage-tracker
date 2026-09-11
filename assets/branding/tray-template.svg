@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>Usage Tracker template</title>
+  <path d="M16 4 A12 12 0 1 1 4 16" fill="none" stroke="#000" stroke-width="4" stroke-linecap="round"/>
+  <path d="M13 19 V16 M19 19 V12" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round"/>
+</svg>

@@ -2,7 +2,13 @@ use egui::{ColorImage, TextureHandle, TextureOptions};
 
 const CLAUDE_SVG: &str = include_str!("../assets/claude.svg");
 const CODEX_SVG: &str = include_str!("../assets/codex.svg");
-pub const APP_ICON_SVG: &str = include_str!("../assets/icon.svg");
+pub const APP_ICON_SVG: &str = include_str!("../assets/branding/app.svg");
+pub const TRAY_ICON_SVG: &str = include_str!("../assets/branding/tray.svg");
+
+/// Flat black with an alpha channel, which is what macOS wants from a menu bar
+/// image: it tints the mask itself, so one asset covers light and dark.
+#[cfg(target_os = "macos")]
+pub const TRAY_TEMPLATE_SVG: &str = include_str!("../assets/branding/tray-template.svg");
 
 /// Rasterised well above display size so the marks stay crisp at any DPI and
 /// when the panel animates.
@@ -153,7 +159,7 @@ mod tests {
     /// it is useless, so assert it still has real coverage that small.
     #[test]
     fn app_icon_survives_tray_size() {
-        let px = rasterise_rgba(APP_ICON_SVG, 16).unwrap();
+        let px = rasterise_rgba(TRAY_ICON_SVG, 16).unwrap();
         let opaque = px.chunks(4).filter(|c| c[3] > 128).count();
         assert!(
             opaque > 30,

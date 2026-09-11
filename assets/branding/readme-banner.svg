@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400">
+  <rect width="1280" height="400" rx="24" fill="#182725"/>
+  <g transform="translate(96 80) scale(.234375)">
+    <circle cx="512" cy="512" r="252" fill="none" stroke="#344B46" stroke-width="76"/>
+    <path d="M512 260 A252 252 0 1 1 260 512" fill="none" stroke="#79D4B5" stroke-width="76" stroke-linecap="round"/>
+    <path d="M456 562 V498 M568 562 V430" fill="none" stroke="#ECF5EF" stroke-width="64" stroke-linecap="round"/>
+  </g>
+  <text x="384" y="196" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="64" font-weight="600" fill="#ECF5EF">Usage Tracker</text>
+  <text x="387" y="249" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="27" fill="#A9C2B9">Your AI quota, at a glance.</text>
+</svg>
