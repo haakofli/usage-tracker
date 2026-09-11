@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # Cheap gates first, so a formatting slip fails in seconds rather than
+      # after a full release build.
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release
+
+      # Every build is downloadable from the run's Summary page, which is the
+      # convenient path for the author: no release, no warnings story.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usage-tracker-windows
+          path: target/release/usage-tracker.exe
+          if-no-files-found: error
+
+  release:
+    # Tags only. Assets are unsigned, which the release notes say plainly.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: usage-tracker-windows
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: usage-tracker.exe
+          generate_release_notes: true
+          body: |
+            ## Unsigned build
+
+            `usage-tracker.exe` is not code signed, so Windows SmartScreen will
+            warn the first time you run it: **More info → Run anyway**.
+
+            This app reads your Claude OAuth token from
+            `~/.claude/.credentials.json`. That is a good reason to be wary of
+            any prebuilt binary that does the same. Building from source takes
+            one command and is the recommended path:
+
+            ```powershell
+            git clone https://github.com/haakofli/usage-tracker
+            cd usage-tracker
+            .\install.ps1
+            ```
+
+            No macOS build yet — the window handling is currently Windows only.

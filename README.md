@@ -1,3 +1,5 @@
+![Usage Tracker — Your AI quota, at a glance.](assets/branding/readme-banner.svg)
+
 # usage-tracker
 
 A small always-on-top Windows dock showing how much of your Claude and Codex
@@ -8,25 +10,19 @@ with the time until it resets. Hover it and the weekly ring slides out
 alongside. The 5-hour rings never move, so opening the panel adds information
 rather than rearranging it.
 
-```
-   collapsed                    hovered
-  ┌────────┐        ┌──────────────────────────┐
-  │   ◕    │        │    ◔          ◕          │
-  │  47%   │        │   11%        47%         │
-  │ 1h 39m │        │  Friday     1h 39m       │
-  │        │        │  01:00                   │
-  │   ◕    │        │    ◔          ◕          │
-  │  100%  │        │   64%        100%        │
-  │ 1h 41m │        │  Tuesday    1h 41m       │
-  └────────┘        │  12:41                   │
-                    └──────────────────────────┘
-```
+| Collapsed | Hovered |
+|---|---|
+| <img src="assets/screenshots/collapsed.png" width="200" alt="The collapsed rail: one ring per provider showing the 5-hour window and time until it resets."> | <img src="assets/screenshots/expanded.png" width="280" alt="Hovered: the weekly ring slides out beside each 5-hour ring, with the day and time it resets."> |
 
 Ring colour tracks usage: teal under 50%, amber to 80%, rose above.
 
 ## Install
 
+Building from source is the recommended path, and it is one command:
+
 ```powershell
+git clone https://github.com/haakofli/usage-tracker
+cd usage-tracker
 .\install.ps1
 ```
 
@@ -38,6 +34,20 @@ it at login. Per-user, no admin rights.
 .\install.ps1 -NoStartup    # install without running at login
 .\install.ps1 -Uninstall    # remove it again
 ```
+
+### Prebuilt binary
+
+Releases carry a Windows `.exe`, and every CI run attaches one to its summary
+page. Both are **unsigned**, so SmartScreen warns on first run — *More info →
+Run anyway*.
+
+Worth saying plainly: this app reads your Claude OAuth token from
+`~/.claude/.credentials.json`. That is exactly the shape of thing you should
+hesitate to run as an unsigned download from a stranger's repo. Building from
+source costs one command and removes the question, which is why it is listed
+first.
+
+There is no macOS build — the window handling is Windows only so far.
 
 ## Using it
 
