@@ -1,0 +1,17 @@
+[package]
+name = "usage-tracker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", features = ["serde"] }
+# `glow` (OpenGL) rather than eframe's default `wgpu` backend: measured on this
+# machine at 117 MB resident and an 11 MB binary, against 278 MB and 19 MB for
+# wgpu, with identical output. Footprint is the point of a dock that runs all
+# day, so the GL backend is the right default here.
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow"] }
+egui = "0.36.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls", "http2", "charset", "system-proxy"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
