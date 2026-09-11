@@ -21,7 +21,7 @@
 - **Hover for the week** — the weekly ring slides out alongside. The 5-hour rings never move, so opening the panel adds information rather than rearranging it.
 - **Colour tracks usage** — teal under 50%, amber to 80%, rose above.
 - **Out of the way** — attaches to a screen edge, passes clicks through outside the card, and keeps off the taskbar.
-- **Small** — an 11 MB binary holding 117 MB resident, measured on Windows. No async runtime.
+- **Small** — a 13 MB binary holding 117 MB resident, measured on Windows. No async runtime.
 - **Remembers** — screen, edge, size and provider choice survive a restart.
 
 ## Install
