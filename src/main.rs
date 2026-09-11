@@ -123,6 +123,8 @@ struct Dock {
     dragging: bool,
     resizing: bool,
     pending_resize: bool,
+    pending_reposition: bool,
+    last_monitor: Option<egui::Vec2>,
 }
 
 impl Dock {
@@ -161,6 +163,8 @@ impl Dock {
             dragging: false,
             resizing: false,
             pending_resize: true,
+            pending_reposition: false,
+            last_monitor: None,
         }
     }
 
@@ -256,9 +260,7 @@ impl Dock {
         )));
         // Docked right, a wider window has to start further left to keep its
         // right edge pinned to the screen.
-        if let Some(monitor) = Self::monitor(ctx) {
-            self.reposition(ctx, monitor);
-        }
+        self.reposition(ctx);
         // A resize is exactly when the stale DWM border segment reappeared.
         if let Some(win) = self.win.as_ref() {
             win.refresh_border_suppression();
@@ -286,9 +288,28 @@ impl Dock {
         );
     }
 
-    fn monitor(ctx: &egui::Context) -> Option<egui::Vec2> {
-        ctx.input(|i| i.viewport().monitor_size)
+    /// Monitor size in the same points the viewport commands use, cached.
+    ///
+    /// Two traps here, both of which made the dock disappear:
+    ///
+    /// 1. `monitor_size` is reported in *native* points — it ignores egui's
+    ///    zoom — while `OuterPosition` and `InnerSize` are converted with
+    ///    zoom-inclusive `pixels_per_point`. Mixing them put the window at
+    ///    x=8019 on a 5120px screen at 1.6x. Dividing by the zoom factor puts
+    ///    both in the same space.
+    /// 2. It is not populated every frame, and a miss used to make
+    ///    `reposition` silently do nothing, leaving the window sized for one
+    ///    state but positioned for another.
+    fn monitor(&mut self, ctx: &egui::Context) -> Option<egui::Vec2> {
+        if let Some(m) = ctx
+            .input(|i| i.viewport().monitor_size)
             .filter(|m| m.x > 0.0 && m.y > 0.0)
+        {
+            // Cached raw, converted on read: a cached converted value would go
+            // stale the moment the zoom changed.
+            self.last_monitor = Some(m);
+        }
+        self.last_monitor.map(|m| m / ctx.zoom_factor().max(0.01))
     }
 
     /// x such that the card's docked side sits flush against the screen edge.
@@ -300,7 +321,15 @@ impl Dock {
         }
     }
 
-    fn reposition(&self, ctx: &egui::Context, monitor: egui::Vec2) {
+    /// Re-pins the window to its docked edge. Retries on the next frame if the
+    /// monitor size is not known yet, so the window is never left sized for one
+    /// state but positioned for another.
+    fn reposition(&mut self, ctx: &egui::Context) {
+        let Some(monitor) = self.monitor(ctx) else {
+            self.pending_reposition = true;
+            return;
+        };
+        self.pending_reposition = false;
         let x = Self::docked_x(self.settings.edge, monitor.x, self.window_size().x);
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
             x,
@@ -309,24 +338,24 @@ impl Dock {
     }
 
     fn place(&mut self, ctx: &egui::Context) {
-        if self.placed {
+        if self.placed && !self.pending_reposition {
             return;
         }
-        let Some(monitor) = Self::monitor(ctx) else {
+        let Some(monitor) = self.monitor(ctx) else {
             return;
         };
         self.settings.top = self
             .settings
             .top
             .clamp(0.0, (monitor.y - self.window_size().y).max(0.0));
-        self.reposition(ctx, monitor);
+        self.reposition(ctx);
         self.placed = true;
     }
 
     /// After a drag, attach to whichever edge the dock was released nearest and
     /// remember it, so it comes back attached next launch.
     fn snap_after_drag(&mut self, ctx: &egui::Context) {
-        let Some(monitor) = Self::monitor(ctx) else {
+        let Some(monitor) = self.monitor(ctx) else {
             return;
         };
         let Some(outer) = ctx.input(|i| i.viewport().outer_rect) else {
@@ -336,7 +365,7 @@ impl Dock {
         let w = self.window_size();
         self.settings.edge = DockEdge::nearest(outer.min.x, w.x, monitor.x);
         self.settings.top = outer.min.y.clamp(0.0, (monitor.y - w.y).max(0.0));
-        self.reposition(ctx, monitor);
+        self.reposition(ctx);
         let _ = settings::save(&self.settings);
     }
 }
@@ -480,9 +509,7 @@ impl eframe::App for Dock {
                     DockEdge::Left => DockEdge::Right,
                 };
                 let _ = settings::save(&self.settings);
-                if let Some(monitor) = Self::monitor(menu.ctx()) {
-                    self.reposition(menu.ctx(), monitor);
-                }
+                self.reposition(menu.ctx());
                 menu.close();
             }
             if menu.button("Quit").clicked() {
