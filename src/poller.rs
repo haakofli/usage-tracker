@@ -148,6 +148,24 @@ fn poll_codex(last_good: &mut LastGood) -> Reading {
                 observed_at: r.observed_at,
             });
             let _ = store::save(last_good);
+
+            // Codex only writes a snapshot when it runs, so the newest one can
+            // easily describe a 5-hour window that has since elapsed. That is
+            // not a live reading — the quota reset and we have not been told
+            // the new figure — so present it as stale rather than current.
+            let elapsed = r
+                .quota
+                .session
+                .as_ref()
+                .is_some_and(|w| w.resets_at <= Utc::now());
+            if elapsed {
+                return Reading::Stale {
+                    quota: r.quota,
+                    at: r.observed_at,
+                    reason: "window reset".to_string(),
+                };
+            }
+
             Reading::Ok {
                 quota: r.quota,
                 at: r.observed_at,

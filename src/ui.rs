@@ -276,6 +276,26 @@ fn quota_of(reading: &Reading) -> Option<&Quota> {
     reading.quota()
 }
 
+/// Drops a window whose reset time has already passed.
+///
+/// Such a reading is not merely stale — it is known to be wrong. The window
+/// rolled over, so usage restarted from zero, and the cached figure describes a
+/// window that no longer exists. Codex hits this routinely, because its numbers
+/// come from rollout files and are only as fresh as the last Codex request: a
+/// snapshot saying 100% would otherwise keep claiming 100% for hours after the
+/// quota had actually reset. Showing nothing is the honest answer, since the
+/// usage since the reset is genuinely unknown.
+fn live(w: Option<&Window>, now: DateTime<Utc>) -> Option<&Window> {
+    w.filter(|w| w.resets_at > now)
+}
+
+/// True when a session reading exists but its window has already reset.
+fn has_expired_session(quota: Option<&Quota>, now: DateTime<Utc>) -> bool {
+    quota
+        .and_then(|q| q.session.as_ref())
+        .is_some_and(|w| w.resets_at <= now)
+}
+
 fn reading_for(snapshot: &Snapshot, provider: Provider) -> Reading {
     match provider {
         Provider::Claude => snapshot.claude.clone(),
@@ -299,8 +319,8 @@ fn draw_provider_block(
 ) {
     let opacity = opacity_of(reading);
     let quota = quota_of(reading);
-    let session = quota.and_then(|q| q.session.as_ref());
-    let week = quota.and_then(|q| q.weekly.as_ref());
+    let session = live(quota.and_then(|q| q.session.as_ref()), now);
+    let week = live(quota.and_then(|q| q.weekly.as_ref()), now);
 
     let ring_y = top + RING_R;
     let cap_y = top + RING_D + 5.0;
@@ -368,9 +388,13 @@ fn draw_provider_block(
     let pct = session
         .map(|w| w.percent_label())
         .unwrap_or_else(|| "—".to_string());
-    let reset = session
-        .map(|w| format_reset_in(w.resets_at, now))
-        .unwrap_or_else(|| "—".to_string());
+    let reset = match session {
+        Some(w) => format_reset_in(w.resets_at, now),
+        // Say which kind of nothing this is: the window has rolled over and we
+        // are waiting to hear a fresh number, rather than never having had one.
+        None if has_expired_session(quota, now) => "reset".to_string(),
+        None => "—".to_string(),
+    };
     caption(icon_cx, &pct, VALUE, &reset, 1.0);
 }
 
@@ -575,6 +599,40 @@ mod tests {
     #[test]
     fn weekly_label_falls_back_when_absent() {
         assert_eq!(weekly_reset_parts(None).0, "—");
+    }
+
+    /// The bug this guards: a Codex snapshot saying 100% kept showing 100%
+    /// for hours after its window had reset, because the reading was cached
+    /// and only its countdown had run out.
+    #[test]
+    fn a_window_past_its_reset_is_not_shown() {
+        let now = Utc::now();
+        let expired = Window {
+            used: 1.0,
+            resets_at: now - chrono::Duration::minutes(5),
+        };
+        let current = Window {
+            used: 1.0,
+            resets_at: now + chrono::Duration::minutes(5),
+        };
+        assert!(live(Some(&expired), now).is_none(), "expired must be hidden");
+        assert!(live(Some(&current), now).is_some(), "current must be shown");
+        assert!(live(None, now).is_none());
+    }
+
+    #[test]
+    fn an_expired_session_is_distinguished_from_a_missing_one() {
+        let now = Utc::now();
+        let expired = Quota {
+            session: Some(Window {
+                used: 1.0,
+                resets_at: now - chrono::Duration::hours(1),
+            }),
+            weekly: None,
+        };
+        assert!(has_expired_session(Some(&expired), now));
+        assert!(!has_expired_session(Some(&Quota::default()), now));
+        assert!(!has_expired_session(None, now));
     }
 
     #[test]

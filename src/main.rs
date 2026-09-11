@@ -23,8 +23,8 @@ fn main() -> eframe::Result {
         probe();
         return Ok(());
     }
-    // Mints the .ico that the executable and shortcuts carry, from the same
-    // SVG the window and tray use, so they cannot drift apart.
+    // Export a PNG of the app icon. For platform bundles (.ico/.icns), use
+    // `cargo run --example export_icons`.
     if let Some(i) = args.iter().position(|a| a == "--emit-icon") {
         let path = args
             .get(i + 1)
@@ -268,10 +268,6 @@ impl Dock {
         }
     }
 
-    fn window_size(&self) -> egui::Vec2 {
-        egui::vec2(self.width, ui::window_height(self.shown.len()))
-    }
-
     /// Scaling rides on egui's zoom factor, so the layout stays in points and
     /// every element scales together. The window is re-sent at the same point
     /// size afterwards; since points-per-pixel changed, that lands as a
@@ -329,66 +325,81 @@ impl Dock {
         );
     }
 
-    /// Monitor size in the same points the viewport commands use, cached.
+    /// Monitor size in **native** points, cached.
     ///
-    /// Two traps here, both of which made the dock disappear:
+    /// Native points are the dock's storage unit for geometry, because they do
+    /// not move when the zoom changes: `monitor_size` is reported in them,
+    /// while `OuterPosition`/`InnerSize` take zoom-inclusive points. Keeping
+    /// stored values native and converting once, at the point of sending, is
+    /// what keeps the docked edge and the top edge fixed while zooming.
     ///
-    /// 1. `monitor_size` is reported in *native* points — it ignores egui's
-    ///    zoom — while `OuterPosition` and `InnerSize` are converted with
-    ///    zoom-inclusive `pixels_per_point`. Mixing them put the window at
-    ///    x=8019 on a 5120px screen at 1.6x. Dividing by the zoom factor puts
-    ///    both in the same space.
-    /// 2. It is not populated every frame, and a miss used to make
-    ///    `reposition` silently do nothing, leaving the window sized for one
-    ///    state but positioned for another.
-    fn monitor(&mut self, ctx: &egui::Context) -> Option<egui::Vec2> {
+    /// It is also not populated every frame, and a miss used to make
+    /// `reposition` silently do nothing, leaving the window sized for one state
+    /// but positioned for another — so the last known value is kept.
+    fn monitor_native(&mut self, ctx: &egui::Context) -> Option<egui::Vec2> {
         if let Some(m) = ctx
             .input(|i| i.viewport().monitor_size)
             .filter(|m| m.x > 0.0 && m.y > 0.0)
         {
-            // Cached raw, converted on read: a cached converted value would go
-            // stale the moment the zoom changed.
             self.last_monitor = Some(m);
         }
-        self.last_monitor.map(|m| m / ctx.zoom_factor().max(0.01))
+        self.last_monitor
     }
 
-    /// x such that the card's docked side sits flush against the screen edge.
-    /// The window overhangs by the shadow margin, which is clipped off-screen.
-    fn docked_x(edge: DockEdge, monitor_w: f32, width: f32) -> f32 {
-        match edge {
-            DockEdge::Right => monitor_w - width + ui::shadow_margin(),
-            DockEdge::Left => -ui::shadow_margin(),
-        }
+    fn zoom(ctx: &egui::Context) -> f32 {
+        ctx.zoom_factor().max(0.01)
+    }
+
+    /// Window size in native points, i.e. independent of the zoom.
+    fn size_native(&self, ctx: &egui::Context) -> egui::Vec2 {
+        let zoom = Self::zoom(ctx);
+        egui::vec2(
+            ui::PANEL_W * zoom,
+            ui::window_height(self.shown.len()) * zoom,
+        )
+    }
+
+    /// Top-left in native points such that the docked edge stays flush with the
+    /// screen and the top edge stays put. Growth therefore runs downwards, and
+    /// inwards from the docked side: leftwards when docked right, rightwards
+    /// when docked left.
+    fn anchor_native(&self, ctx: &egui::Context, monitor: egui::Vec2) -> egui::Pos2 {
+        let zoom = Self::zoom(ctx);
+        let margin = ui::shadow_margin() * zoom;
+        let x = match self.settings.edge {
+            DockEdge::Right => monitor.x - self.size_native(ctx).x + margin,
+            DockEdge::Left => -margin,
+        };
+        egui::pos2(x, self.settings.top)
     }
 
     /// Re-pins the window to its docked edge. Retries on the next frame if the
     /// monitor size is not known yet, so the window is never left sized for one
     /// state but positioned for another.
     fn reposition(&mut self, ctx: &egui::Context) {
-        let Some(monitor) = self.monitor(ctx) else {
+        let Some(monitor) = self.monitor_native(ctx) else {
             self.pending_reposition = true;
             return;
         };
         self.pending_reposition = false;
-        let x = Self::docked_x(self.settings.edge, monitor.x, self.window_size().x);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-            x,
-            self.settings.top,
-        )));
+        let anchor = self.anchor_native(ctx, monitor);
+        // The command wants zoom-inclusive points; the anchor is native, so the
+        // single conversion happens here.
+        let zoom = Self::zoom(ctx);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+            anchor / zoom,
+        ));
     }
 
     fn place(&mut self, ctx: &egui::Context) {
         if self.placed && !self.pending_reposition {
             return;
         }
-        let Some(monitor) = self.monitor(ctx) else {
+        let Some(monitor) = self.monitor_native(ctx) else {
             return;
         };
-        self.settings.top = self
-            .settings
-            .top
-            .clamp(0.0, (monitor.y - self.window_size().y).max(0.0));
+        let height = self.size_native(ctx).y;
+        self.settings.top = self.settings.top.clamp(0.0, (monitor.y - height).max(0.0));
         self.reposition(ctx);
         self.placed = true;
     }
@@ -396,16 +407,21 @@ impl Dock {
     /// After a drag, attach to whichever edge the dock was released nearest and
     /// remember it, so it comes back attached next launch.
     fn snap_after_drag(&mut self, ctx: &egui::Context) {
-        let Some(monitor) = self.monitor(ctx) else {
+        let Some(monitor) = self.monitor_native(ctx) else {
             return;
         };
         let Some(outer) = ctx.input(|i| i.viewport().outer_rect) else {
             return;
         };
 
-        let w = self.window_size();
-        self.settings.edge = DockEdge::nearest(outer.min.x, w.x, monitor.x);
-        self.settings.top = outer.min.y.clamp(0.0, (monitor.y - w.y).max(0.0));
+        // `outer_rect` is in zoom-inclusive points; stored geometry is native.
+        let zoom = Self::zoom(ctx);
+        let size = self.size_native(ctx);
+        let left_native = outer.min.x * zoom;
+        let top_native = outer.min.y * zoom;
+
+        self.settings.edge = DockEdge::nearest(left_native, size.x, monitor.x);
+        self.settings.top = top_native.clamp(0.0, (monitor.y - size.y).max(0.0));
         self.reposition(ctx);
         let _ = settings::save(&self.settings);
     }
