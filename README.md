@@ -1,143 +1,82 @@
+<div align="center">
+
 ![Usage Tracker — Your AI quota, at a glance.](assets/branding/readme-banner.svg)
 
-# usage-tracker
+**A lightweight, always-on-top dock showing how much Claude and Codex quota you have left.**
 
-A small always-on-top Windows dock showing how much of your Claude and Codex
-quota is left.
+[![Download](https://img.shields.io/badge/⬇%20Download-latest%20release-79D4B5?style=for-the-badge&labelColor=182725)](https://github.com/haakofli/usage-tracker/releases/latest)
 
-Collapsed, it is a narrow rail: one ring per provider for the 5-hour window,
-with the time until it resets. Hover it and the weekly ring slides out
-alongside. The 5-hour rings never move, so opening the panel adds information
-rather than rearranging it.
+![Windows](https://img.shields.io/badge/Windows-0078D4?style=flat-square&logo=windows&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-111111?style=flat-square&logo=apple&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-79D4B5?style=flat-square)](LICENSE)
 
-| Collapsed | Hovered |
-|---|---|
-| <img src="assets/screenshots/collapsed.png" width="200" alt="The collapsed rail: one ring per provider showing the 5-hour window and time until it resets."> | <img src="assets/screenshots/expanded.png" width="280" alt="Hovered: the weekly ring slides out beside each 5-hour ring, with the day and time it resets."> |
+<img src="assets/screenshots/collapsed.png" width="190" alt="The collapsed rail: one ring per provider showing the 5-hour window and the time until it resets.">
+<img src="assets/screenshots/expanded.png" width="266" alt="Hovered: the weekly ring slides out beside each 5-hour ring, with the day and time it resets.">
 
-Ring colour tracks usage: teal under 50%, amber to 80%, rose above.
+</div>
+
+## Features
+
+- **A ring per provider** — Claude and Codex, 5-hour window, with the time until it resets.
+- **Hover for the week** — the weekly ring slides out alongside. The 5-hour rings never move, so opening the panel adds information rather than rearranging it.
+- **Colour tracks usage** — teal under 50%, amber to 80%, rose above.
+- **Out of the way** — attaches to a screen edge, passes clicks through outside the card, and keeps off the taskbar.
+- **Small** — an 11 MB binary holding 117 MB resident, measured on Windows. No async runtime.
+- **Remembers** — screen, edge, size and provider choice survive a restart.
 
 ## Install
 
-Building from source is the recommended path, and it is one command:
+Download above, or build from source — one command either way:
 
-```powershell
+```sh
 git clone https://github.com/haakofli/usage-tracker
 cd usage-tracker
-.\install.ps1
+
+./install.sh     # macOS
+.\install.ps1    # Windows
 ```
 
-Builds a release binary, copies it to
-`%LOCALAPPDATA%\Programs\usage-tracker`, adds a Start Menu shortcut, and starts
-it at login. Per-user, no admin rights.
+Installs per-user, adds a launcher and starts at login. Pass `--uninstall` (`-Uninstall` on Windows) to remove it.
 
-```powershell
-.\install.ps1 -NoStartup    # install without running at login
-.\install.ps1 -Uninstall    # remove it again
-```
+> **Downloads are unsigned.** SmartScreen warns on first run; macOS needs
+> `xattr -d com.apple.quarantine usage-tracker-macos`. This app reads your Claude
+> OAuth token, which is a fair reason to prefer building it yourself.
 
-### Prebuilt binary
-
-Releases carry a Windows `.exe`, and every CI run attaches one to its summary
-page. Both are **unsigned**, so SmartScreen warns on first run — *More info →
-Run anyway*.
-
-Worth saying plainly: this app reads your Claude OAuth token from
-`~/.claude/.credentials.json`. That is exactly the shape of thing you should
-hesitate to run as an unsigned download from a stranger's repo. Building from
-source costs one command and removes the question, which is why it is listed
-first.
-
-There is no macOS build — the window handling is Windows only so far.
+> **macOS support is new.** It builds and is tested in CI on every commit, but it
+> has had far less real-world use than the Windows build. Issues welcome.
 
 ## Using it
 
-| Action | How |
-|---|---|
+| | |
+| --- | --- |
 | See weekly quota | Hover the dock |
-| Move it | Drag it; it attaches to whichever screen edge you release it near |
-| Resize | Hover it, then **Ctrl +** / **Ctrl −** (**Ctrl 0** resets) |
-| Choose providers | Tray menu — tick the ones to show |
-| Refresh now | Right-click → **Refresh now** |
-| Switch edge | Right-click → **Attach to left/right edge** |
-| Hide / show | Left-click the tray icon, or its menu |
-| Quit | Right-click → **Quit**, or the tray menu |
-
-The zoom keys only act while the pointer is over the dock, so Ctrl +/- keeps
-working normally everywhere else.
-
-The tray tooltip carries both percentages plus when each reading was taken.
-Position, edge, size and provider choice persist across restarts.
-
-## Providers
-
-The tray menu lists the AI CLIs found on this machine — detected from their
-config directory under your profile, or their binary on `PATH`. Tick one to
-include it in the dock.
-
-Only **Claude** and **Codex** can actually be ticked. Detection and readability
-are separate questions: Copilot, Gemini and Cursor are detected and listed, but
-none of them publishes a quota you can read locally the way Claude's usage
-endpoint and Codex's rollout files do, so they appear greyed out rather than as
-empty rings.
-
-Turning a provider off stops it being polled as well as drawn, which matters
-for Claude — there is no reason to spend rate-limited requests on something
-that is not on screen.
+| Move it | Drag it — it attaches to whichever screen edge you release it near |
+| Resize | Hover, then <kbd>Ctrl</kbd>/<kbd>⌘</kbd> with <kbd>+</kbd>, <kbd>−</kbd> or <kbd>0</kbd> |
+| Choose providers | Tray or menu bar icon, or right-click the dock |
+| Refresh, switch edge, quit | Right-click the dock |
 
 ## Where the numbers come from
 
-**Claude** — `GET /api/oauth/usage` on `api.anthropic.com`, authorised with the
-OAuth token in `~/.claude/.credentials.json`.
+**Claude** — `GET /api/oauth/usage`, authorised with the token in `~/.claude/.credentials.json`. That file is **only ever read, never written**.
 
-That file is **only ever read, never written**. A bug that wrote to it would
-corrupt the credentials your real Claude Code sessions depend on, so when the
-token is expired or the API returns 401 the dock shows the cached value marked
-stale instead of attempting a refresh. Claude Code refreshes the token itself
-during normal use and the dock picks that up on its next poll.
+**Codex** — the `rate_limits` snapshot Codex already writes into `~/.codex/sessions/**/rollout-*.jsonl`. No subprocess, and it cannot be rate limited, but it is only as fresh as your last Codex request.
 
-**Codex** — parsed from the `rate_limits` snapshot Codex already writes into
-`~/.codex/sessions/**/rollout-*.jsonl`. No subprocess, and it cannot be rate
-limited. Its weakness is freshness: it is only as current as your last Codex
-request, which is why the tray tooltip reports the observation time.
+Copilot, Gemini and Cursor are detected and listed, but publish no quota you can read locally, so they appear greyed out rather than as empty rings.
 
-### Polling and rate limits
-
-The Claude usage endpoint rate-limits aggressively — sustained 30–60s polling
-is reported to return a session-long 429 with no signal for when it clears. So:
-
-- 5 minute default interval, with a hard 2 minute floor enforced in code that
-  even a manual refresh cannot bypass
-- On 429, exponential backoff 5 → 10 → 20 → 40 → 60 minutes, capped
-- The cached value keeps showing throughout, marked stale
-
-Codex polls every 60s, being a local file read.
-
-A dimmed block with an amber dot means stale. Last-good readings are cached to
-`%LOCALAPPDATA%\usage-tracker\last-good.json`, so losing the network shows
-yesterday's numbers rather than blanks.
+Polling intervals, rate-limit backoff and caching are covered in [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Build
 
-```powershell
+```sh
 cargo run              # run it
-cargo test             # 64 tests
+cargo test             # the test suite
 cargo run -- --probe   # print raw provider responses once, for diagnosis
 ```
 
-Rust with `eframe`/`egui`. A background thread polls each provider on its own
-interval and publishes an immutable snapshot through a mutex; the render loop
-only reads that snapshot. No async runtime.
+Rust and `eframe`/`egui` on the `glow` backend. A background thread polls each provider and publishes an immutable snapshot through a mutex; the render loop only reads that snapshot.
 
-`egui` is built on the `glow` (OpenGL) backend rather than the default `wgpu`:
-measured at 117 MB resident and an 11 MB binary against 278 MB and 19 MB, with
-identical output.
+## License
 
-`DOCK_DIAG=1` logs poll cadence, hover transitions and DPI facts to stderr.
+[MIT](LICENSE) — free for any use.
 
-## Credits
-
-Provider marks are the trademarks of their respective owners, included here to
-label their own quota. `assets/claude.svg` is from
-[simple-icons](https://github.com/simple-icons/simple-icons) (CC0);
-`assets/codex.svg` is the OpenAI mark from
-[gilbarbara/logos](https://github.com/gilbarbara/logos).
+Provider marks are the trademarks of their respective owners, included to label their own quota: `assets/claude.svg` from [simple-icons](https://github.com/simple-icons/simple-icons) (CC0), `assets/codex.svg` from [gilbarbara/logos](https://github.com/gilbarbara/logos).
