@@ -16,8 +16,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SAM_FLAGS, REG_SZ, RegCloseKey,
-    RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS,
+    REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
+    RegSetValueExW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -45,6 +46,29 @@ fn open_run_key(access: REG_SAM_FLAGS) -> Option<HKEY> {
     status.is_ok().then_some(key)
 }
 
+/// Opens the Run key for writing, creating it when absent.
+///
+/// A profile that has never had a startup program does not have this key at
+/// all, and `RegOpenKeyExW` fails outright rather than creating one — so
+/// registering the dock on a fresh Windows install failed until this did.
+fn create_run_key() -> Option<HKEY> {
+    let mut key = HKEY::default();
+    let status = unsafe {
+        RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        )
+    };
+    status.is_ok().then_some(key)
+}
+
 /// Whether the dock is registered to start at sign-in.
 pub fn autostart_enabled() -> bool {
     let Some(key) = open_run_key(KEY_READ) else {
@@ -56,7 +80,7 @@ pub fn autostart_enabled() -> bool {
 }
 
 pub fn set_autostart(on: bool) -> Result<()> {
-    let key = open_run_key(KEY_SET_VALUE).context("open the Run key for writing")?;
+    let key = create_run_key().context("open the Run key for writing")?;
 
     let outcome = if on {
         let exe = std::env::current_exe().context("locate the running executable")?;
