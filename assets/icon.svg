@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Generic quota gauge: a track ring with a filled arc, legible down to
+       16px in the system tray. Teal reads on both light and dark taskbars. -->
+  <circle cx="32" cy="32" r="22" fill="none" stroke="#3A3F48" stroke-width="9"/>
+  <path d="M 32 10 A 22 22 0 1 1 10.3 35.8"
+        fill="none" stroke="#5EB59B" stroke-width="9" stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="5.5" fill="#5EB59B"/>
+</svg>
