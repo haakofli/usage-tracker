@@ -241,9 +241,11 @@ impl Dock {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }
+            tray::Action::Refresh => {
+                self.control.request_refresh();
+                return;
+            }
             tray::Action::Toggle => self.visible = !self.visible,
-            tray::Action::Show => self.visible = true,
-            tray::Action::Hide => self.visible = false,
             tray::Action::SetProvider(id, on) => {
                 self.settings.set_enabled(id, on);
                 let _ = settings::save(&self.settings);
@@ -386,9 +388,7 @@ impl Dock {
         // The command wants zoom-inclusive points; the anchor is native, so the
         // single conversion happens here.
         let zoom = Self::zoom(ctx);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
-            anchor / zoom,
-        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(anchor / zoom));
     }
 
     fn place(&mut self, ctx: &egui::Context) {
@@ -432,6 +432,22 @@ impl eframe::App for Dock {
         [0.0, 0.0, 0.0, 0.0]
     }
 
+    /// Tray handling lives here rather than in `ui`, because eframe runs no
+    /// egui pass at all while the window is hidden — it calls `logic` instead.
+    /// Polling the tray from `ui` meant that hiding the dock also stopped the
+    /// tray responding, so Show and Quit went dead and it could not be
+    /// recovered except by killing the process.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_tray(ctx);
+
+        let snapshot = self.snapshot.lock().unwrap().clone();
+        self.update_tooltip(&snapshot);
+
+        // Heartbeat: `logic` only runs again if a repaint was requested, so
+        // this is what keeps the tray alive while the dock is hidden.
+        ctx.request_repaint_after(Duration::from_millis(150));
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.win.is_none() {
@@ -443,16 +459,10 @@ impl eframe::App for Dock {
             win.keep_frameless();
         }
         self.diag(&ctx);
-        self.handle_tray(&ctx);
         self.place(&ctx);
         self.frames += 1;
 
-        // Tray clicks arrive outside egui's input, so keep a slow heartbeat
-        // even when nothing else asks for a repaint.
-        ctx.request_repaint_after(Duration::from_millis(120));
-
         let snapshot = self.snapshot.lock().unwrap().clone();
-        self.update_tooltip(&snapshot);
         let frame_info = ui::draw(
             ui,
             &self.icons,

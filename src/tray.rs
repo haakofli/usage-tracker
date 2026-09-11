@@ -11,8 +11,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 pub enum Action {
     Toggle,
-    Show,
-    Hide,
+    Refresh,
     Quit,
     SetProvider(ProviderId, bool),
 }
@@ -26,8 +25,7 @@ pub struct Tray {
     /// Held to keep the icon alive; dropping it removes it from the tray.
     icon: TrayIcon,
     toggle_id: MenuId,
-    show_id: MenuId,
-    hide_id: MenuId,
+    refresh_id: MenuId,
     quit_id: MenuId,
     providers: Vec<ProviderEntry>,
 }
@@ -42,41 +40,40 @@ impl Tray {
 
     pub fn new(settings: &Settings, installed: &[ProviderId]) -> Option<Self> {
         const SIZE: u32 = 32;
-        let rgba = icons::rasterise_rgba(icons::APP_ICON_SVG, SIZE)?;
+        let rgba = icons::rasterise_rgba(icons::TRAY_ICON_SVG, SIZE)?;
         let icon = Icon::from_rgba(rgba, SIZE, SIZE).ok()?;
 
+        // Native Win32 menus honour this process-wide setting, so the tray menu
+        // matches the dock instead of being a bright rectangle beside it.
+        crate::winshape::use_dark_menus();
+
+        let refresh = MenuItem::new("Refresh now", true, None);
         let toggle = MenuItem::new("Show / hide", true, None);
-        let show = MenuItem::new("Show", true, None);
-        let hide = MenuItem::new("Hide", true, None);
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
-        menu.append_items(&[&toggle, &PredefinedMenuItem::separator()])
-            .ok()?;
 
+        // Only providers the dock can actually read are listed. Something
+        // installed but unreadable is not an option worth offering, and
+        // anything not installed is not mentioned at all.
         let mut providers = Vec::new();
-        for &id in installed {
-            let readable = id.has_quota_source();
-            // Providers with no quota source are listed so it is clear the dock
-            // saw them, but cannot be enabled — there is nothing to display.
-            let label = if readable {
-                id.label().to_string()
-            } else {
-                format!("{} — no quota available", id.label())
-            };
-            let item = CheckMenuItem::new(label, readable, settings.is_enabled(id), None);
+        let usable: Vec<_> = installed
+            .iter()
+            .copied()
+            .filter(|id| id.has_quota_source())
+            .collect();
+
+        for &id in &usable {
+            let item = CheckMenuItem::new(id.label(), true, settings.is_enabled(id), None);
             menu.append(&item).ok()?;
             providers.push(ProviderEntry { id, item });
         }
+        if !usable.is_empty() {
+            menu.append(&PredefinedMenuItem::separator()).ok()?;
+        }
 
-        menu.append_items(&[
-            &PredefinedMenuItem::separator(),
-            &show,
-            &hide,
-            &PredefinedMenuItem::separator(),
-            &quit,
-        ])
-        .ok()?;
+        menu.append_items(&[&refresh, &toggle, &PredefinedMenuItem::separator(), &quit])
+            .ok()?;
 
         let tray = TrayIconBuilder::new()
             .with_tooltip("Usage tracker — AI quota dock")
@@ -88,8 +85,7 @@ impl Tray {
         Some(Self {
             icon: tray,
             toggle_id: toggle.id().clone(),
-            show_id: show.id().clone(),
-            hide_id: hide.id().clone(),
+            refresh_id: refresh.id().clone(),
             quit_id: quit.id().clone(),
             providers,
         })
@@ -118,10 +114,8 @@ impl Tray {
             }
             action = if event.id == self.toggle_id {
                 Some(Action::Toggle)
-            } else if event.id == self.show_id {
-                Some(Action::Show)
-            } else if event.id == self.hide_id {
-                Some(Action::Hide)
+            } else if event.id == self.refresh_id {
+                Some(Action::Refresh)
             } else if event.id == self.quit_id {
                 Some(Action::Quit)
             } else {

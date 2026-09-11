@@ -7,6 +7,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
 };
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, GetCursorPos,
@@ -15,6 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDPROC, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
     WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_THICKFRAME, WindowFromPoint,
 };
+use windows::core::{PCSTR, w};
 
 pub struct Window {
     hwnd: Option<HWND>,
@@ -139,6 +141,34 @@ static HIT_L: AtomicI32 = AtomicI32::new(0);
 static HIT_T: AtomicI32 = AtomicI32::new(0);
 static HIT_R: AtomicI32 = AtomicI32::new(i32::MAX);
 static HIT_B: AtomicI32 = AtomicI32::new(i32::MAX);
+
+/// Switches Win32 menus — which is what the tray menu is — to dark mode.
+///
+/// There is no documented API for this. `uxtheme.dll` exports
+/// `SetPreferredAppMode` and `FlushMenuThemes` by ordinal only (135 and 136),
+/// which is what shell apps use to get dark context menus. Both calls are
+/// entirely optional: if the ordinals ever move, the menu simply stays light
+/// rather than the app failing.
+pub fn use_dark_menus() {
+    const SET_PREFERRED_APP_MODE: u16 = 135;
+    const FLUSH_MENU_THEMES: u16 = 136;
+    /// `PreferredAppMode::ForceDark`
+    const FORCE_DARK: i32 = 2;
+
+    unsafe {
+        let Ok(uxtheme) = LoadLibraryW(w!("uxtheme.dll")) else {
+            return;
+        };
+        if let Some(addr) = GetProcAddress(uxtheme, PCSTR(SET_PREFERRED_APP_MODE as usize as _)) {
+            let set_mode: extern "system" fn(i32) -> i32 = std::mem::transmute(addr);
+            set_mode(FORCE_DARK);
+        }
+        if let Some(addr) = GetProcAddress(uxtheme, PCSTR(FLUSH_MENU_THEMES as usize as _)) {
+            let flush: extern "system" fn() = std::mem::transmute(addr);
+            flush();
+        }
+    }
+}
 
 /// Restricts mouse input to the painted card.
 ///
