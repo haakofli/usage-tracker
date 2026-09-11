@@ -26,17 +26,15 @@
 
 ## Install
 
-Download above, or build from source — one command either way:
+Download above and run it — there is no installer, and nothing to trust beyond the binary itself. Or build it yourself:
 
 ```sh
 git clone https://github.com/haakofli/usage-tracker
 cd usage-tracker
-
-./install.sh     # macOS
-.\install.ps1    # Windows
+cargo build --release
 ```
 
-Installs per-user, adds a launcher and starts at login. Pass `--uninstall` (`-Uninstall` on Windows) to remove it.
+The binary lands in `target/release/`. Put it wherever you like; to have it come back after a reboot, tick **Start at login** in its menu — the app registers itself and unregisters just as easily.
 
 > **Downloads are unsigned.** SmartScreen warns on first run; macOS needs
 > `xattr -d com.apple.quarantine usage-tracker-macos`. This app reads your Claude
@@ -53,6 +51,7 @@ Installs per-user, adds a launcher and starts at login. Pass `--uninstall` (`-Un
 | Move it | Drag it — it attaches to whichever screen edge you release it near |
 | Resize | Hover, then <kbd>Ctrl</kbd>/<kbd>⌘</kbd> with <kbd>+</kbd>, <kbd>−</kbd> or <kbd>0</kbd> |
 | Choose providers | Tray or menu bar icon, or right-click the dock |
+| Start at login | Tick **Start at login** in either menu |
 | Refresh, switch edge, quit | Right-click the dock |
 
 ## Where the numbers come from

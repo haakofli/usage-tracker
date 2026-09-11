@@ -1,9 +1,12 @@
 //! Win32 bits the dock needs that winit does not surface: frame suppression
 //! and cursor hit-testing.
 
+use anyhow::{Context, Result};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_FILE_NOT_FOUND, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
 };
@@ -12,6 +15,10 @@ use windows::Win32::Graphics::Gdi::{
     MONITORINFOEXW, MonitorFromWindow,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SAM_FLAGS, REG_SZ, RegCloseKey,
+    RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, GetCursorPos,
@@ -21,9 +28,57 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE,
     WS_THICKFRAME, WindowFromPoint,
 };
-use windows::core::{BOOL, PCSTR, w};
+use windows::core::{BOOL, PCSTR, PCWSTR, w};
 
 use super::Monitor;
+
+/// Where Windows looks for per-user programs to launch at sign-in. Writing here
+/// needs no admin rights and no installer: the app registers itself, and the
+/// entry shows up in Task Manager's Startup tab where the user can audit or
+/// disable it.
+const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
+const RUN_VALUE: PCWSTR = w!("usage-tracker");
+
+fn open_run_key(access: REG_SAM_FLAGS) -> Option<HKEY> {
+    let mut key = HKEY::default();
+    let status = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, None, access, &mut key) };
+    status.is_ok().then_some(key)
+}
+
+/// Whether the dock is registered to start at sign-in.
+pub fn autostart_enabled() -> bool {
+    let Some(key) = open_run_key(KEY_READ) else {
+        return false;
+    };
+    let present = unsafe { RegQueryValueExW(key, RUN_VALUE, None, None, None, None) }.is_ok();
+    let _ = unsafe { RegCloseKey(key) };
+    present
+}
+
+pub fn set_autostart(on: bool) -> Result<()> {
+    let key = open_run_key(KEY_SET_VALUE).context("open the Run key for writing")?;
+
+    let outcome = if on {
+        let exe = std::env::current_exe().context("locate the running executable")?;
+        // Quoted, so a path with spaces in it still launches.
+        let value: Vec<u16> = format!("\"{}\"", exe.display())
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let bytes =
+            unsafe { std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), value.len() * 2) };
+        unsafe { RegSetValueExW(key, RUN_VALUE, None, REG_SZ, Some(bytes)) }.ok()
+    } else {
+        // Already absent is the desired state, not a failure.
+        match unsafe { RegDeleteValueW(key, RUN_VALUE) } {
+            e if e == ERROR_FILE_NOT_FOUND => Ok(()),
+            e => e.ok(),
+        }
+    };
+
+    let _ = unsafe { RegCloseKey(key) };
+    outcome.context("update the Run key")
+}
 
 unsafe fn monitor_info(handle: HMONITOR) -> Option<Monitor> {
     unsafe {

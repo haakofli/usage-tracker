@@ -145,6 +145,7 @@ struct Dock {
     pending_reposition: bool,
     installed: Vec<providers::ProviderId>,
     last_monitor: Option<platform::Monitor>,
+    autostart: bool,
 }
 
 impl Dock {
@@ -192,6 +193,7 @@ impl Dock {
             pending_resize: true,
             pending_reposition: false,
             last_monitor: None,
+            autostart: platform::autostart_enabled(),
         }
     }
 
@@ -252,6 +254,7 @@ impl Dock {
                     self.apply_visibility(ctx);
                 }
                 tray::Action::SetProvider(id, on) => self.set_provider(id, on),
+                tray::Action::SetAutostart(on) => self.set_autostart(on),
             }
         }
     }
@@ -271,6 +274,24 @@ impl Dock {
         self.pending_resize = true;
         if let Some(tray) = self.tray.as_ref() {
             tray.sync_provider_checks(&self.settings);
+        }
+    }
+
+    /// The one place the login item is switched, shared by the tray menu and
+    /// the dock's own right-click menu.
+    ///
+    /// The registry entry — a launch agent on macOS — is the source of truth
+    /// rather than anything in `settings.json`, so removing it by hand is
+    /// honoured instead of being silently rewritten on the next launch.
+    fn set_autostart(&mut self, on: bool) {
+        if let Err(e) = platform::set_autostart(on) {
+            eprintln!("could not change the login item: {e:#}");
+        }
+        // Re-read rather than assume the write landed, so both menus show what
+        // is actually registered.
+        self.autostart = platform::autostart_enabled();
+        if let Some(tray) = self.tray.as_ref() {
+            tray.sync_autostart(self.autostart);
         }
     }
 
@@ -619,6 +640,7 @@ impl eframe::App for Dock {
         // Same choices as the tray, so neither has to be hunted for. Both go
         // through `set_provider`, which keeps them from drifting apart.
         let mut provider_change: Option<(providers::ProviderId, bool)> = None;
+        let mut autostart_change: Option<bool> = None;
         let mut flip_edge = false;
         let mut quit = false;
         let mut refresh = false;
@@ -651,6 +673,10 @@ impl eframe::App for Dock {
                 flip_edge = true;
                 menu.close();
             }
+            let mut autostart = self.autostart;
+            if menu.checkbox(&mut autostart, "Start at login").changed() {
+                autostart_change = Some(autostart);
+            }
             menu.separator();
             if menu.button("Quit").clicked() {
                 quit = true;
@@ -662,6 +688,9 @@ impl eframe::App for Dock {
         }
         if let Some((id, on)) = provider_change {
             self.set_provider(id, on);
+        }
+        if let Some(on) = autostart_change {
+            self.set_autostart(on);
         }
         if flip_edge {
             self.settings.edge = match self.settings.edge {

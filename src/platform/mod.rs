@@ -15,7 +15,10 @@ compile_error!("usage-tracker supports Windows and macOS");
 #[cfg_attr(target_os = "macos", path = "macos.rs")]
 mod backend;
 
-pub use backend::{Window, ZoomKey, ZoomKeys, monitors, take_display_changed, use_dark_menus};
+pub use backend::{
+    Window, ZoomKey, ZoomKeys, autostart_enabled, monitors, set_autostart, take_display_changed,
+    use_dark_menus,
+};
 
 /// One display, in physical pixels, plus the name that identifies it across
 /// restarts so the dock can return to the screen it was left on.
@@ -62,5 +65,33 @@ pub fn config_dir() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         Ok(home_dir()?.join("Library").join("Application Support"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Exercises the real registry key — the real launch agent on macOS —
+    /// because that is the only thing that proves the OS accepted the write.
+    /// Compiling is no evidence for a `RegSetValueExW` with the wrong flags.
+    #[test]
+    fn autostart_round_trips() {
+        // A machine that already has the login item configured belongs to
+        // someone using it: rewriting it would repoint their entry at this test
+        // binary. Leave it alone, and let a clean CI runner cover the write.
+        if super::autostart_enabled() {
+            return;
+        }
+
+        super::set_autostart(true).expect("register the login item");
+        assert!(super::autostart_enabled(), "registering must be observable");
+
+        super::set_autostart(false).expect("unregister the login item");
+        assert!(
+            !super::autostart_enabled(),
+            "unregistering must be observable"
+        );
+
+        // Removing one that is not there is the desired state, not a failure.
+        super::set_autostart(false).expect("removal must be idempotent");
     }
 }

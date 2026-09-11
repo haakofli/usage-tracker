@@ -21,6 +21,9 @@ pub enum Action {
     /// straight back on — which is precisely why the checkboxes appeared to do
     /// nothing. Carrying the desired value makes re-delivery harmless.
     SetProvider(ProviderId, bool),
+    /// Register or unregister the dock as a login item. Carries the desired
+    /// value for the same reason as `SetProvider`.
+    SetAutostart(bool),
 }
 
 struct ProviderEntry {
@@ -42,6 +45,7 @@ pub struct Tray {
     toggle_id: MenuId,
     refresh_id: MenuId,
     quit_id: MenuId,
+    autostart: CheckMenuItem,
     providers: Vec<ProviderEntry>,
     inbox: Arc<Mutex<Inbox>>,
 }
@@ -66,6 +70,14 @@ impl Tray {
 
         let refresh = MenuItem::new("Refresh now", true, None);
         let toggle = MenuItem::new("Show / hide", true, None);
+        // The OS is the source of truth, so this is read rather than remembered
+        // — the two cannot drift if the user removes the entry by hand.
+        let autostart = CheckMenuItem::new(
+            "Start at login",
+            true,
+            crate::platform::autostart_enabled(),
+            None,
+        );
         let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
@@ -93,8 +105,14 @@ impl Tray {
             menu.append(&PredefinedMenuItem::separator()).ok()?;
         }
 
-        menu.append_items(&[&refresh, &toggle, &PredefinedMenuItem::separator(), &quit])
-            .ok()?;
+        menu.append_items(&[
+            &refresh,
+            &toggle,
+            &autostart,
+            &PredefinedMenuItem::separator(),
+            &quit,
+        ])
+        .ok()?;
 
         let tray = TrayIconBuilder::new()
             .with_tooltip("Usage tracker — AI quota dock")
@@ -131,9 +149,18 @@ impl Tray {
             toggle_id: toggle.id().clone(),
             refresh_id: refresh.id().clone(),
             quit_id: quit.id().clone(),
+            autostart,
             providers,
             inbox,
         })
+    }
+
+    /// Keeps the login-item tick in step, in case the dock's own menu changed
+    /// it or the write did not take.
+    pub fn sync_autostart(&self, on: bool) {
+        if self.autostart.is_checked() != on {
+            self.autostart.set_checked(on);
+        }
     }
 
     /// Keeps the tick marks in step with the settings, in case anything other
@@ -181,6 +208,10 @@ impl Tray {
                 // The library flips the tick before telling us, so this is the
                 // state the user just asked for.
                 actions.push(Action::SetProvider(entry.id, entry.item.is_checked()));
+            } else if self.autostart.id() == &id {
+                // The library flips the tick before telling us, so this is the
+                // state the user just asked for.
+                actions.push(Action::SetAutostart(self.autostart.is_checked()));
             } else if id == self.toggle_id {
                 actions.push(Action::Toggle);
             } else if id == self.refresh_id {

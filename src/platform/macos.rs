@@ -6,12 +6,14 @@
 //! borderless `NSWindow` genuinely has no frame — so those entry points exist
 //! only to keep one API across both platforms.
 
+use anyhow::{Context, Result};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSScreen, NSView, NSWindow, NSWindowCollectionBehavior};
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -257,3 +259,57 @@ pub fn take_display_changed() -> bool {
 /// No-op: macOS themes menus from the system appearance, so a tray menu already
 /// matches the dock without being asked.
 pub fn use_dark_menus() {}
+
+/// Reverse-DNS label for the login item, and the plist's file name.
+const AGENT_LABEL: &str = "dev.haakofli.usage-tracker";
+
+/// Per-user launch agents. Writing here needs no admin rights and no installer:
+/// the app registers itself, and the entry is a plain readable plist the user
+/// can inspect or delete.
+fn agent_path() -> Result<PathBuf> {
+    Ok(super::home_dir()?
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{AGENT_LABEL}.plist")))
+}
+
+/// Whether the dock is registered to start at login.
+pub fn autostart_enabled() -> bool {
+    agent_path().is_ok_and(|path| path.is_file())
+}
+
+pub fn set_autostart(on: bool) -> Result<()> {
+    let path = agent_path()?;
+
+    if !on {
+        // Already absent is the desired state, not a failure.
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other.context("remove the launch agent"),
+        };
+    }
+
+    let exe = std::env::current_exe().context("locate the running executable")?;
+    let parent = path.parent().context("launch agent has no parent")?;
+    std::fs::create_dir_all(parent).context("create ~/Library/LaunchAgents")?;
+
+    // `launchctl load` is deliberately not shelled out to: the agent is picked
+    // up at the next login either way, and spawning a process to register
+    // ourselves is exactly the sort of thing this replaced an install script to
+    // avoid.
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>{AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array><string>{}</string></array>
+    <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+"#,
+        exe.display()
+    );
+    std::fs::write(&path, plist).context("write the launch agent")
+}

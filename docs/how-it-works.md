@@ -79,6 +79,21 @@ Geometry is stored in physical pixels throughout, because they are the only unit
 that does not move when the zoom changes. `src/platform/` holds everything that
 differs between the two systems; nothing above it is platform-aware.
 
+## Starting at login
+
+The app registers itself rather than shipping an install script, so nothing has
+to be run with elevated trust to get a dock that survives a reboot. Both entries
+are plain, per-user and auditable:
+
+| Platform | Entry |
+| --- | --- |
+| Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `usage-tracker` — visible in Task Manager's Startup tab |
+| macOS | `~/Library/LaunchAgents/dev.haakofli.usage-tracker.plist` |
+
+The OS entry is the source of truth, not a flag in `settings.json`. Deleting it
+by hand is therefore honoured rather than silently rewritten on next launch, and
+the menu tick reflects what is actually registered.
+
 ## Diagnostics
 
 `DOCK_DIAG=1` logs poll cadence, hover transitions and DPI facts to stderr.

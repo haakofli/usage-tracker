@@ -118,6 +118,8 @@ jobs:
             ```sh
             git clone https://github.com/haakofli/usage-tracker
             cd usage-tracker
-            ./install.sh          # macOS
-            .\install.ps1         # Windows
+            cargo build --release
             ```
+
+            There is no installer. To start it with your session, tick
+            **Start at login** in the app's own menu.
