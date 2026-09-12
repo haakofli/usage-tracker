@@ -68,8 +68,8 @@ guess.
 
 ## Staleness and caching
 
-A dimmed block with an amber dot means stale. Last-good readings are cached, so
-losing the network shows yesterday's numbers rather than blanks:
+A dimmed block means stale. Last-good readings are cached, so losing the network
+shows yesterday's numbers rather than blanks:
 
 | Platform | Settings and cache |
 | --- | --- |

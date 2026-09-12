@@ -54,17 +54,21 @@ pub const fn shadow_margin() -> f32 {
 }
 
 const CARD_RADIUS: u8 = 16;
-const RING_TRACK_W: f32 = 3.0;
-const RING_FILL_W: f32 = 3.4;
+/// Wide enough to carry colour. egui feathers a polyline by about a pixel on
+/// each side, so a hairline arc is mostly blend: at 3.4pt the brightest pixel
+/// of the ring measured 81% of the colour it was given, which is why a
+/// saturated palette still came out looking greyed off.
+const RING_TRACK_W: f32 = 3.6;
+const RING_FILL_W: f32 = 4.6;
 const MARK_D: f32 = RING_D * 0.56;
 
 const CARD_BG: Color32 = Color32::from_rgba_premultiplied(14, 15, 17, 242);
 /// Premultiplied alpha requires RGB <= alpha; passing white at alpha 28 to
 /// `from_rgba_premultiplied` renders as a bright additive haze rather than a
 /// faint track, which is what produced the stray outline in the first build.
-const TRACK: Color32 = Color32::from_rgba_premultiplied(28, 28, 28, 28);
+const TRACK: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
 const VALUE: Color32 = Color32::from_rgb(236, 238, 242);
-const MUTED: Color32 = Color32::from_rgb(108, 113, 124);
+const MUTED: Color32 = Color32::from_rgb(140, 147, 160);
 
 /// Claude's own brand orange, as shipped in its mark.
 const CLAUDE_ORANGE: Color32 = Color32::from_rgb(217, 119, 87);
@@ -73,9 +77,11 @@ const CODEX_WHITE: Color32 = Color32::from_rgb(226, 229, 234);
 /// Codex rather than a brand colour it does not have.
 const COPILOT_WHITE: Color32 = Color32::from_rgb(226, 229, 234);
 
-const CALM: Color32 = Color32::from_rgb(94, 181, 155);
-const WARM: Color32 = Color32::from_rgb(214, 168, 92);
-const HOT: Color32 = Color32::from_rgb(212, 110, 110);
+/// Bright and saturated on purpose. The card is near-black and the arc is a few
+/// points wide, so a hue that would be bold on a page reads as grey here.
+const CALM: Color32 = Color32::from_rgb(56, 226, 165);
+const WARM: Color32 = Color32::from_rgb(255, 186, 56);
+const HOT: Color32 = Color32::from_rgb(252, 92, 88);
 
 /// The marks are rasterised to neutral masks, so their brand colour is applied
 /// here at paint time.
@@ -249,11 +255,15 @@ fn gauge(ui: &egui::Ui, icons: &Icons, center: Pos2, g: Gauge<'_>, id: &str) {
     }
 }
 
+/// How much of its colour a row keeps. Dimming is the only thing marking a
+/// reading as stale, but it has to stay well clear of looking switched off: at
+/// 0.55 a stale row read as disabled rather than merely a few minutes old. A
+/// row with no reading at all sits lowest, since there is nothing to look at.
 fn opacity_of(reading: &Reading) -> f32 {
     match reading {
         Reading::Ok { .. } => 1.0,
-        Reading::Stale { .. } => 0.55,
-        Reading::Never | Reading::Failed { .. } => 0.6,
+        Reading::Stale { .. } => 0.78,
+        Reading::Never | Reading::Failed { .. } => 0.65,
     }
 }
 
@@ -357,14 +367,6 @@ fn draw_provider_block(
         },
         &format!("{}-5h", provider.key()),
     );
-
-    if matches!(reading, Reading::Stale { .. }) {
-        ui.painter().circle_filled(
-            Pos2::new(icon_cx + RING_R - 1.0, top + 2.0),
-            2.2,
-            dim(WARM, 0.9),
-        );
-    }
 
     let pct = session
         .map(|w| w.percent_label())
@@ -503,6 +505,27 @@ pub fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The value has to cover the track it is drawn over, or a part-filled ring
+    /// shows a grey fringe along the arc it has already passed.
+    #[test]
+    fn the_value_arc_is_wider_than_its_track() {
+        const { assert!(RING_FILL_W > RING_TRACK_W) };
+    }
+
+    /// Guards the reason a stale row is dimmed at all: it must stay closer to a
+    /// live row than to one with nothing to show.
+    #[test]
+    fn a_stale_row_is_softened_rather_than_greyed_out() {
+        let stale = opacity_of(&Reading::Stale {
+            quota: Quota::default(),
+            at: Utc::now(),
+            reason: "network".to_string(),
+        });
+        assert!(stale > 0.7, "stale at {stale} reads as disabled");
+        assert!(stale < 1.0, "stale must still be distinguishable");
+        assert!(stale > opacity_of(&Reading::Never));
+    }
 
     #[test]
     fn colors_escalate_with_usage() {
