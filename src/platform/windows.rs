@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
 use windows::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
@@ -11,8 +12,8 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MONITORINFOEXW, MonitorFromWindow,
+    CreateRectRgn, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow, SetWindowRgn,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Registry::{
@@ -162,6 +163,8 @@ pub fn monitors() -> Vec<Monitor> {
 
 pub struct Window {
     hwnd: Option<HWND>,
+    /// The region last handed to Windows, so an unchanged one is not re-sent.
+    clip: Cell<(i32, i32, i32, i32)>,
 }
 
 impl Window {
@@ -175,7 +178,10 @@ impl Window {
             suppress_dwm_border(hwnd);
             remove_nonclient_area(hwnd);
         }
-        Self { hwnd }
+        Self {
+            hwnd,
+            clip: Cell::new((0, 0, 0, 0)),
+        }
     }
 
     /// Re-asserts the frameless styles. Cheap when nothing has changed.
@@ -230,11 +236,11 @@ impl Window {
     ///
     /// The window is deliberately kept at its expanded size at all times —
     /// resizing it mid-animation recreates the GL surface and makes the hover
-    /// stutter — so most of it is transparent while collapsed. Without this,
-    /// that transparent area would swallow clicks meant for whatever is behind
-    /// it. Answering `WM_NCHITTEST` with `HTTRANSPARENT` outside the card
-    /// passes those clicks through, which a window region would also do but at
-    /// the cost of clipping what gets painted.
+    /// stutter — so most of it is transparent while collapsed. Answering
+    /// `WM_NCHITTEST` with `HTTRANSPARENT` outside the card keeps the shadow
+    /// band from reading as a hover and from taking a click, but it is not on
+    /// its own enough to let another application have that click — see
+    /// [`Window::clip_to`].
     ///
     /// The rectangle is read by the hit test on the message pump rather than
     /// applied here, so this is just four stores.
@@ -243,6 +249,37 @@ impl Window {
         HIT_T.store(t, Ordering::Relaxed);
         HIT_R.store(r, Ordering::Relaxed);
         HIT_B.store(b, Ordering::Relaxed);
+    }
+
+    /// Cuts the window down to the card and the room its shadow needs, so the
+    /// transparent expanse beside a collapsed rail is not part of the window at
+    /// all.
+    ///
+    /// `HTTRANSPARENT` was doing this job and cannot: Win32 only forwards a hit
+    /// test answered that way to other windows *on the same thread*, so a click
+    /// aimed at another application landed on the dock's own empty space and
+    /// went nowhere. `WindowFromPoint` honours it regardless of thread, which
+    /// is why hovering read correctly while clicking did not. A window region
+    /// is applied by the window manager itself and holds for every process.
+    ///
+    /// It clips painting as well as input, which is why it is given the
+    /// shadow's margin rather than just the card.
+    pub fn clip_to(&self, l: i32, t: i32, r: i32, b: i32) {
+        if self.clip.get() == (l, t, r, b) {
+            return;
+        }
+        let Some(hwnd) = self.hwnd else {
+            return;
+        };
+        unsafe {
+            let region = CreateRectRgn(l, t, r, b);
+            // Windows owns the region once it accepts it, and only then.
+            if SetWindowRgn(hwnd, Some(region), true) == 0 {
+                let _ = DeleteObject(region.into());
+                return;
+            }
+        }
+        self.clip.set((l, t, r, b));
     }
 }
 

@@ -110,8 +110,15 @@ has to be told not to swallow clicks meant for what is behind it:
 
 | Platform | Mechanism |
 | --- | --- |
-| Windows | `WM_NCHITTEST` answers `HTTRANSPARENT` outside the card |
+| Windows | the window is clipped to the card by a window region, and `WM_NCHITTEST` answers `HTTRANSPARENT` across the shadow margin left inside it |
 | macOS | `ignoresMouseEvents` is toggled as the cursor crosses the card |
+
+`HTTRANSPARENT` is not enough on its own: Win32 only forwards a hit test
+answered that way to other windows on the *same thread*, so a click aimed at
+another application landed on the dock's empty space and went nowhere.
+`WindowFromPoint` honours it regardless of thread, which is why hovering read
+correctly while clicking did not. A window region is applied by the window
+manager itself and holds for every process.
 
 Geometry is stored in physical pixels throughout, because they are the only unit
 that does not move when the zoom changes. `src/platform/` holds everything that

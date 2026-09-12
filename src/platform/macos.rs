@@ -158,6 +158,12 @@ impl Window {
             window.setIgnoresMouseEvents(ignore);
         }
     }
+
+    /// Nothing to do: `set_hit_rect` already hands every event outside the card
+    /// to whatever is behind the window, so there is no empty area left holding
+    /// on to clicks. Windows has to cut the window down to shape instead, and
+    /// the two backends present the same API.
+    pub fn clip_to(&self, _l: i32, _t: i32, _r: i32, _b: i32) {}
 }
 
 /// What the zoom keys are asking for this frame.

@@ -570,15 +570,23 @@ impl eframe::App for Dock {
         // Mouse input is restricted to the painted card. The window itself is
         // never resized while hovering — that recreates the GL surface and made
         // the animation stutter — so the rest of it is transparent and must not
-        // swallow clicks meant for what is behind.
+        // swallow clicks meant for what is behind. Clipping goes a shadow
+        // margin wider, since that room is painted even though nothing there
+        // is clickable.
         let local = frame_info.card.translate(-origin.to_vec2());
+        let bounds = |r: egui::Rect| {
+            (
+                (r.min.x * ppp).floor() as i32,
+                (r.min.y * ppp).floor() as i32,
+                (r.max.x * ppp).ceil() as i32,
+                (r.max.y * ppp).ceil() as i32,
+            )
+        };
         if let Some(win) = self.win.as_ref() {
-            win.set_hit_rect(
-                (local.min.x * ppp).floor() as i32,
-                (local.min.y * ppp).floor() as i32,
-                (local.max.x * ppp).ceil() as i32,
-                (local.max.y * ppp).ceil() as i32,
-            );
+            let (l, t, r, b) = bounds(local);
+            win.set_hit_rect(l, t, r, b);
+            let (l, t, r, b) = bounds(local.expand(ui::shadow_margin()));
+            win.clip_to(l, t, r, b);
         }
 
         // Hover comes from the real cursor, not egui's enter/leave events.
