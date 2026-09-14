@@ -199,6 +199,8 @@ struct Gauge<'a> {
     window: Option<&'a Window>,
     /// `None` draws a bare ring with its percentage inside, for the weekly view.
     provider: Option<Provider>,
+    /// Only ever the panel-open fade. Readings are painted at full strength
+    /// whatever their age, so nothing here encodes staleness.
     opacity: f32,
 }
 
@@ -255,18 +257,6 @@ fn gauge(ui: &egui::Ui, icons: &Icons, center: Pos2, g: Gauge<'_>, id: &str) {
     }
 }
 
-/// How much of its colour a row keeps. Dimming is the only thing marking a
-/// reading as stale, but it has to stay well clear of looking switched off: at
-/// 0.55 a stale row read as disabled rather than merely a few minutes old. A
-/// row with no reading at all sits lowest, since there is nothing to look at.
-fn opacity_of(reading: &Reading) -> f32 {
-    match reading {
-        Reading::Ok { .. } => 1.0,
-        Reading::Stale { .. } => 0.78,
-        Reading::Never | Reading::Failed { .. } => 0.65,
-    }
-}
-
 fn quota_of(reading: &Reading) -> Option<&Quota> {
     reading.quota()
 }
@@ -308,7 +298,6 @@ fn draw_provider_block(
     now: DateTime<Utc>,
     weekly: Option<(f32, f32)>,
 ) {
-    let opacity = opacity_of(reading);
     let quota = quota_of(reading);
     let session = live(quota.and_then(|q| q.session.as_ref()), now);
     let week = live(quota.and_then(|q| q.weekly.as_ref()), now);
@@ -324,7 +313,7 @@ fn draw_provider_block(
             a,
             9.5,
             0.3,
-            dim(a_color, opacity * alpha),
+            dim(a_color, alpha),
             COL_W,
         );
         text(
@@ -334,7 +323,7 @@ fn draw_provider_block(
             b,
             9.0,
             0.1,
-            dim(MUTED, opacity * alpha),
+            dim(MUTED, alpha),
             COL_W,
         );
     };
@@ -348,7 +337,7 @@ fn draw_provider_block(
             Gauge {
                 window: week,
                 provider: None,
-                opacity: opacity * alpha,
+                opacity: alpha,
             },
             &format!("{}-7d", provider.key()),
         );
@@ -363,7 +352,7 @@ fn draw_provider_block(
         Gauge {
             window: session,
             provider: Some(provider),
-            opacity,
+            opacity: 1.0,
         },
         &format!("{}-5h", provider.key()),
     );
@@ -513,18 +502,14 @@ mod tests {
         const { assert!(RING_FILL_W > RING_TRACK_W) };
     }
 
-    /// Guards the reason a stale row is dimmed at all: it must stay closer to a
-    /// live row than to one with nothing to show.
+    /// The card is the only thing the desktop shows through. Everything painted
+    /// on it is fully opaque, so a row cannot read as greyed out.
     #[test]
-    fn a_stale_row_is_softened_rather_than_greyed_out() {
-        let stale = opacity_of(&Reading::Stale {
-            quota: Quota::default(),
-            at: Utc::now(),
-            reason: "network".to_string(),
-        });
-        assert!(stale > 0.7, "stale at {stale} reads as disabled");
-        assert!(stale < 1.0, "stale must still be distinguishable");
-        assert!(stale > opacity_of(&Reading::Never));
+    fn only_the_card_is_translucent() {
+        assert!(CARD_BG.a() < 255, "the card should stay see-through");
+        for c in [VALUE, MUTED, CLAUDE_ORANGE, CODEX_WHITE, CALM, WARM, HOT] {
+            assert_eq!(c.a(), 255, "{c:?} is painted at less than full strength");
+        }
     }
 
     #[test]

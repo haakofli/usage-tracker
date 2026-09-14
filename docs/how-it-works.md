@@ -68,8 +68,12 @@ guess.
 
 ## Staleness and caching
 
-A dimmed block means stale. Last-good readings are cached, so losing the network
-shows yesterday's numbers rather than blanks:
+Last-good readings are cached, so losing the network shows yesterday's numbers
+rather than blanks. Nothing on the card marks a reading as stale: every row is
+painted at full strength whatever its age, and only the card itself is
+see-through. `DOCK_DIAG=1` is how you tell a fresh reading from a cached one.
+
+The cache sits alongside the settings:
 
 | Platform | Settings and cache |
 | --- | --- |
