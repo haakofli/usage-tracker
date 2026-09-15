@@ -108,6 +108,15 @@ impl Window {
     /// No-op: the stale-border artefact this fixes is a DWM behaviour.
     pub fn refresh_border_suppression(&self) {}
 
+    /// No-op: AppKit has no equivalent race to lose.
+    ///
+    /// A floating `NSWindow` sits in a band of its own above every normal
+    /// window and stays there; nothing demotes it the way Windows lets the
+    /// latest claimant to the topmost band take the front of it, and the
+    /// collection behaviour set in [`Window::new`] already carries the dock
+    /// across Spaces and full-screen apps.
+    pub fn keep_on_top(&self) {}
+
     /// Bounds of the display this window is on, in **physical pixels**.
     pub fn monitor_rect_px(&self) -> Option<Monitor> {
         let mtm = MainThreadMarker::new()?;

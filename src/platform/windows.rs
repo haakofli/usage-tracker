@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
@@ -24,11 +25,13 @@ use windows::Win32::System::Registry::{
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, GWL_EXSTYLE, GWL_STYLE, GWLP_WNDPROC, GetCursorPos,
-    GetWindowLongPtrW, GetWindowRect, HTTRANSPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_NCCALCSIZE, WM_NCHITTEST, WM_NCPAINT, WM_SETTINGCHANGE, WNDPROC, WS_BORDER, WS_CAPTION,
-    WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE,
-    WS_THICKFRAME, WindowFromPoint,
+    GetWindowLongPtrW, GetWindowRect, HTTRANSPARENT, HWND_TOPMOST, IsIconic, SC_MINIMIZE,
+    SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WINDOWPOS, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_NCCALCSIZE, WM_NCHITTEST, WM_NCPAINT, WM_SETTINGCHANGE, WM_SYSCOMMAND, WM_WINDOWPOSCHANGING,
+    WNDPROC, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
+    WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_WINDOWEDGE, WS_THICKFRAME,
+    WindowFromPoint,
 };
 use windows::core::{BOOL, PCSTR, PCWSTR, w};
 
@@ -161,10 +164,17 @@ pub fn monitors() -> Vec<Monitor> {
     found
 }
 
+/// How often the dock re-stakes its claim to the front of the topmost band.
+/// Long enough to cost nothing, short enough that a window which jumped the
+/// queue is only briefly in front.
+const RAISE_INTERVAL: Duration = Duration::from_secs(1);
+
 pub struct Window {
     hwnd: Option<HWND>,
     /// The region last handed to Windows, so an unchanged one is not re-sent.
     clip: Cell<(i32, i32, i32, i32)>,
+    /// When the topmost claim was last re-staked.
+    raised: Cell<Instant>,
 }
 
 impl Window {
@@ -174,20 +184,64 @@ impl Window {
             _ => None,
         };
         if let Some(hwnd) = hwnd {
-            strip_frame(hwnd);
+            enforce_styles(hwnd);
             suppress_dwm_border(hwnd);
             remove_nonclient_area(hwnd);
         }
         Self {
             hwnd,
             clip: Cell::new((0, 0, 0, 0)),
+            // The window is created topmost, so the first re-stake is a full
+            // interval away rather than immediate.
+            raised: Cell::new(Instant::now()),
         }
     }
 
-    /// Re-asserts the frameless styles. Cheap when nothing has changed.
+    /// Re-asserts the frameless and tool-window styles. Cheap when nothing has
+    /// changed.
     pub fn keep_frameless(&self) {
         if let Some(hwnd) = self.hwnd {
-            strip_frame(hwnd);
+            enforce_styles(hwnd);
+        }
+    }
+
+    /// Re-stakes the claim to the front of the topmost band, and undoes a
+    /// minimise that got through.
+    ///
+    /// `WS_EX_TOPMOST` only orders the window against the *other* topmost
+    /// windows, and the one that asserted it most recently is in front — so a
+    /// chat client raising a call window, or anything else that floats, ends up
+    /// over a dock that was marked topmost once at startup and then left alone.
+    /// Asserting it again puts the dock back at the front.
+    ///
+    /// Throttled, because this is called from the frame loop and the hover
+    /// animation runs that at the display's refresh rate.
+    pub fn keep_on_top(&self) {
+        let Some(hwnd) = self.hwnd else {
+            return;
+        };
+        let now = Instant::now();
+        if now.duration_since(self.raised.get()) < RAISE_INTERVAL {
+            return;
+        }
+        self.raised.set(now);
+
+        unsafe {
+            // Minimise-all is refused in the window procedure; this is the
+            // backstop for a `SW_MINIMIZE` sent straight at the window, which
+            // does not ask first.
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
     }
 
@@ -451,6 +505,23 @@ unsafe extern "system" fn subclass_proc(
         DISPLAY_CHANGED.store(true, Ordering::Relaxed);
     }
 
+    // Refuse to minimise. The taskbar's Show desktop button, Win+D and Win+M
+    // all ask every window to go away, and a dock that is deliberately absent
+    // from the taskbar has nowhere to go: minimising it just loses it, with no
+    // button left to bring it back.
+    if msg == WM_SYSCOMMAND && (wparam.0 as u32 & 0xFFF0) == SC_MINIMIZE {
+        return LRESULT(0);
+    }
+
+    // Put the window back at the front of the topmost band on every move it is
+    // asked to make. Windows asks before it acts, so this costs nothing and,
+    // unlike hoisting the window from a timer, never lands a frame late.
+    if msg == WM_WINDOWPOSCHANGING && lparam.0 != 0 {
+        let pos = unsafe { &mut *(lparam.0 as *mut WINDOWPOS) };
+        pos.hwndInsertAfter = HWND_TOPMOST;
+        pos.flags &= !SWP_NOZORDER;
+    }
+
     if msg == WM_NCHITTEST {
         // lparam carries screen coordinates in its two 16-bit halves.
         let x = (lparam.0 & 0xFFFF) as i16 as i32;
@@ -513,7 +584,8 @@ fn suppress_dwm_border(hwnd: HWND) {
     }
 }
 
-/// Clears every frame and edge style from the window.
+/// Clears every frame and edge style from the window, and asserts the two the
+/// dock needs kept.
 ///
 /// `WS_EX_WINDOWEDGE` is the one that actually shows: it draws a raised
 /// hairline right on the window boundary, measured at RGB(63,68,69) against a
@@ -521,18 +593,27 @@ fn suppress_dwm_border(hwnd: HWND) {
 /// `WS_*` frame bits are cleared alongside it since an undecorated window has
 /// no use for them either.
 ///
-/// Called every frame: winit re-applies styles on resize, and this is a cheap
-/// read-and-compare that only touches the window when something crept back.
-pub fn strip_frame(hwnd: HWND) {
+/// `WS_EX_TOOLWINDOW` is what keeps the dock out of the shell's idea of the
+/// running applications. winit hides the taskbar button through
+/// `ITaskbarList::DeleteTab`, which takes the button away but leaves the window
+/// an ordinary application window everywhere else — so Show desktop minimised
+/// it along with the rest, and Alt+Tab offered it as somewhere to switch to.
+/// The style is the thing the shell actually filters on.
+///
+/// Called every frame: winit re-applies its own styles on resize and knows
+/// nothing about these, and this is a cheap read-and-compare that only touches
+/// the window when something crept back.
+fn enforce_styles(hwnd: HWND) {
     const STYLE_MASK: u32 = WS_CAPTION.0 | WS_THICKFRAME.0 | WS_BORDER.0 | WS_DLGFRAME.0;
     const EX_MASK: u32 =
         WS_EX_WINDOWEDGE.0 | WS_EX_CLIENTEDGE.0 | WS_EX_STATICEDGE.0 | WS_EX_DLGMODALFRAME.0;
+    const EX_KEEP: u32 = WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0;
 
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
         let new_style = style & !STYLE_MASK;
-        let new_ex = ex & !EX_MASK;
+        let new_ex = (ex & !EX_MASK) | EX_KEEP;
         if new_style == style && new_ex == ex {
             return;
         }

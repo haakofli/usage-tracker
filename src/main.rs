@@ -535,9 +535,12 @@ impl eframe::App for Dock {
             self.win = Some(platform::Window::new(frame));
         }
         // winit re-applies window styles on resize, so re-assert them rather
-        // than stripping once at startup.
+        // than stripping once at startup. Being topmost is likewise not a
+        // setting that holds by itself — every other floating window that
+        // appears takes the front of that band.
         if let Some(win) = self.win.as_ref() {
             win.keep_frameless();
+            win.keep_on_top();
         }
         // Plugging a monitor in or out invalidates the screen the dock was
         // anchored to, and Windows will have moved the window. Re-anchor rather
